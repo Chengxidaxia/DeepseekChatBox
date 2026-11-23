@@ -355,7 +355,8 @@ export function openSettings({ onChange } = {}) {
         h('label', { text: t('prices') }),
         h('div', { class: 'help', html:
           'DeepSeek 采用<strong>峰谷定价</strong>：周一至周五 9:00-12:00、14:00-18:00（北京时间）为高峰，'
-          + '其余时段与周末为<span>空闲</span>，空闲价是高峰价的一半。法定节假日按官方口径算空闲，程序无法自动判断，可用下面的开关强制。'
+          + '其余时段与周末为<span>空闲</span>，空闲价是高峰价的一半。法定节假日按官方口径算空闲，'
+          + '自动模式会查询公开节假日 API（jiejiariapi / xiaoai / pinjia / Nager 多源兜底，按天缓存）来判断节假日与调休补班。'
           + '<br>这里只用于本地估算，实际扣费以官方账单为准。' }),
         priceGrid,
         h('div', { class: 'peak-row' }, [

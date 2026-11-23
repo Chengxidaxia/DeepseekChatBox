@@ -617,13 +617,27 @@ function usageLine(m) {
 /**
  * 峰谷计价：按「当前时段」取价（auto 时按北京时间判断；也可在设置里强制空闲/高峰）
  * 返回 { text, peak } 或 null
+ * 峰谷状态由 refreshPeakState() 预热（含节假日 API），这里只读缓存，保持同步渲染。
  */
+let peakState = null; // { peak, at }
+async function refreshPeakState() {
+  const mode = settings.peakMode || 'auto';
+  if (mode !== 'auto') { peakState = { peak: mode === 'peak', at: Date.now() }; return; }
+  let peak;
+  try {
+    const { isPeakNowAsync } = await import('./store.js');
+    peak = await isPeakNowAsync();
+  } catch { peak = isPeakNow(); }
+  peakState = { peak, at: Date.now() };
+  renderChat(); // 峰谷状态变了，费用显示要重算
+}
+
 function pickPrice(modelId) {
   const p = settings.prices || {};
   const key = String(modelId || settings.model).includes('pro') ? 'pro' : 'flash';
   const bucket = p[key] || {};
   const mode = settings.peakMode || 'auto';
-  const peak = mode === 'peak' || (mode === 'auto' && isPeakNow());
+  const peak = mode === 'peak' || (mode === 'auto' && (peakState?.peak ?? isPeakNow()));
   const at = (k) => Number(bucket[k + (peak ? 'Peak' : 'Idle')]) || 0;
   return { peak, inMiss: at('miss'), inHit: at('hit'), out: at('out') };
 }
@@ -805,8 +819,19 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
       const lastUser = [...curHistory].reverse().find((m) => m.role === 'user');
       const toolQuery = [lastUser?.content || '', ...(lastUser?.attachments || []).map((a) => a.text || '')].join(' ');
       const usedTools = [];
+      const foundTools = [];
       for (const m of curHistory) {
         for (const tc of m.toolCalls || []) if (tc?.function?.name) usedTools.push(tc.function.name);
+        // find_tool 的结果里带 data.names，下一轮把这些工具追加进 tools
+        for (const rec of m.toolResults || []) {
+          if (rec?.name === 'find_tool') {
+            const data = typeof rec.data === 'string' ? (() => { try { return JSON.parse(rec.data); } catch { return null; } })() : rec.data;
+            if (Array.isArray(data?.names)) foundTools.push(...data.names);
+            // 兼容：从文本里提取「名字：xxx, yyy」
+            const m2 = /名字：([^\n]+)/.exec(rec.content || '');
+            if (m2) for (const n of m2[1].split(',').map((x) => x.trim())) if (/^[a-z_]+$/.test(n)) foundTools.push(n);
+          }
+        }
       }
       const { payload } = buildPayload(curHistory, {
         settings: es,
@@ -816,6 +841,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
         extraTools,
         toolQuery,
         usedTools,
+        foundTools,
       });
       if (first && continueMode) payload.__beta = true;
       window.__lastPayload = payload;
@@ -836,7 +862,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
         try { out = await callTool(name, args); }
         catch (e) { out = { ok: false, text: '工具调用失败：' + e.message }; }
         const content = out.text || JSON.stringify(out);
-        const record = { id: tc.id, name, args, content, ok: out.ok !== false, ms: out.elapsedMs ?? (Date.now() - t0) };
+        const record = { id: tc.id, name, args, content, ok: out.ok !== false, ms: out.elapsedMs ?? (Date.now() - t0), data: out.data };
         cur.toolResults.push(record);
         appendBranch(conv, chainTail(conv)?.id ?? null, [{
           id: uid('t'), role: 'tool', tool_call_id: tc.id, name,
@@ -1737,6 +1763,7 @@ function onSettingsChange(patch = {}) {
   }
   if (patch.apiKey) updateComposerState();
   if (patch.prices || patch.peakMode) renderChat();  // 费用按峰谷估算，改完得重算
+  if (patch.peakMode && typeof refreshPeakState === 'function') void refreshPeakState();
   renderSidebar();
   updateComposerState();
 }
@@ -2012,6 +2039,10 @@ async function boot() {
     state.models = cachedModels();
   }
   if (params.get('theme')) saveSettings({ theme: params.get('theme') });
+
+  // 峰谷自动模式：后台查一次节假日 API（带缓存），不阻塞首屏
+  void refreshPeakState();
+  setInterval(() => { void refreshPeakState(); }, 30 * 60 * 1000); // 半小时刷新，跨时段自动更新
   if (params.get('lang')) saveSettings({ lang: params.get('lang') });
   setLang(settings.lang);
   applyStatic();

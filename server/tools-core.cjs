@@ -507,6 +507,68 @@ function runCommand({ command, cwd, timeoutMs }) {
   });
 }
 
+/** 工具检索关键词（与 public/js/tool-search.js 的 TOOL_KEYS 对齐） */
+const FIND_TOOL_KEYS = {
+  get_balance: ['余额', '充值', '欠费', '账户余额', '还有多少钱'],
+  list_models: ['模型列表', '有哪些模型', '可用模型', '模型版本'],
+  current_time: ['几点', '现在时间', '今天几号', '星期几', '时区'],
+  search_history: ['历史对话', '之前聊过', '以前问过', '找对话'],
+  usage_stats: ['用量统计', '消耗token', '总共用了', '累计token'],
+  web_search: ['搜索', '联网', '新闻', '最新消息', '查一下', '天气', '实时'],
+  fetch_url: ['打开网址', '抓取网页', '读网页', '这个链接', '读取网页'],
+  calculator: ['计算', '算一下', '帮我算', '等于多少', '表达式', '算账', '运算'],
+  hash_text: ['哈希', 'md5', 'sha1', 'sha256', 'sha512', '摘要', '校验值'],
+  base64_codec: ['base64', '编码', '解码'],
+  url_codec: ['url编码', 'url解码', '转义', '百分号'],
+  json_format: ['json格式', '格式化json', '美化json', '解析json'],
+  text_stats: ['字数', '多少字', '字符数', '行数', '统计文本'],
+  uuid_gen: ['uuid', '唯一id', 'guid', '随机id'],
+  random_pick: ['随机', '抽签', '抽取', '抽奖', '掷骰子'],
+  dns_lookup: ['dns', '解析域名', '域名解析', '查ip'],
+  port_check: ['端口', '端口通不通', '能否连接', '服务在线'],
+  http_request: ['调接口', '发请求', 'http请求', 'get请求', 'post请求', '状态码'],
+  local_ip: ['本机ip', '我的ip', '网卡地址', '局域网ip'],
+  base_convert: ['进制转换', '二进制', '十六进制', '八进制', '十进制转'],
+  percentage: ['百分比', '打几折', '折扣', '增长率', '占比'],
+  date_diff: ['相差多少天', '倒计时', '日期差', '过去多久'],
+  unit_convert: ['单位换算', '公里换', '英里', '公斤', '摄氏度', '温度换算'],
+  regex_test: ['正则', 'regex', '正则表达式', '匹配提取'],
+  diff_text: ['对比差异', '文本对比', '比较区别', '改了什么', 'diff'],
+  csv_json: ['csv', '表格转', 'csv转json', '表格数据'],
+  slugify: ['slug', '生成别名', '友好url', '标题转链接'],
+  password_gen: ['生成密码', '随机密码', '强密码', 'password'],
+  id_validator: ['验证身份证', '校验身份证', '手机号合法', '邮箱合法'],
+  timestamp_convert: ['时间戳', 'timestamp', 'unix时间', '毫秒转', '秒转日期'],
+  json_minify: ['压缩json', 'json压缩', 'json一行'],
+  token_count: ['多少token', 'token数', '分词', '计费token', 'token消耗'],
+  cmd_run: ['执行命令', 'cmd', '运行命令', '本机命令'],
+};
+
+/** 在工具定义里检索（强关键词命中打分），供 find_tool 使用 */
+function searchToolDefs(defs, query, topK = 5) {
+  const lower = String(query || '').toLowerCase();
+  const flat = lower.replace(/[^\p{L}\p{N}]+/gu, '');
+  const scored = [];
+  for (const def of defs || []) {
+    const name = def?.function?.name || '';
+    if (name === 'find_tool') continue;
+    const keys = FIND_TOOL_KEYS[name] || [];
+    let score = 0;
+    for (const k of keys) {
+      const kw = String(k).toLowerCase();
+      if (lower.includes(kw)) score += kw.length >= 4 ? 12 : 8;
+      else if (/[\u4e00-\u9fff]/.test(kw) && kw.length >= 3) {
+        const grams = [];
+        for (let i = 0; i < kw.length - 1; i++) grams.push(kw.slice(i, i + 2));
+        if (grams.filter((g) => flat.includes(g)).length >= Math.max(2, grams.length - 1)) score += 5;
+      }
+    }
+    if (score > 0) scored.push({ name, score, def });
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK);
+}
+
 function createTools({ store, upstream = 'https://api.deepseek.com', log = console.log }) {
   const definitions = [
     {
@@ -1003,6 +1065,24 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
             detail: { type: 'boolean', description: '是否返回 token id 与片段列表，默认 false' },
           },
           required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      // 元工具：让模型自己搜索可用工具。检索到的工具会被前端追加到下一轮 tools，
+      // 所以这里返回名字 + 描述 + 完整参数定义（这样模型下一轮直接能调）
+      type: 'function',
+      function: {
+        name: 'find_tool',
+        description: '搜索本机可用的工具目录。当你觉得现有工具不够用、或需要确认有没有能做某件事的工具时调用它。传入你想完成的任务描述，会返回最相关的工具及其完整参数定义；返回的工具会在下一轮自动可用，你可以直接调用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: '你想做什么，如「把中文翻译成英文」「检查端口是否开放」「算 token 数」' },
+            top_k: { type: 'integer', description: '返回几个工具，默认 5，最大 10' },
+          },
+          required: ['query'],
           additionalProperties: false,
         },
       },
@@ -1769,6 +1849,28 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
         }
         return { ok: true, text: lines.join('\n'), data: { tokens: r.count, ids: r.ids, pieces: r.tokens, model: r.model, vocabSize } };
       } catch (e) { return { ok: false, text: '分词失败：' + e.message }; }
+    },
+
+    async find_tool(args = {}) {
+      const query = String(args.query || '').trim();
+      if (!query) return { ok: false, text: '缺少 query 参数。' };
+      const topK = Math.min(10, Math.max(1, Number(args.top_k) || 5));
+      const hits = searchToolDefs(definitions, query, topK);
+      if (!hits.length) {
+        return { ok: false, text: `没有找到与「${query}」相关的工具。可用工具共 ${definitions.length} 个，换个说法试试，或直接回答用户。` };
+      }
+      const names = hits.map((h) => h.name);
+      const lines = hits.map((h) => {
+        const f = h.def.function;
+        const params = Object.entries(f.parameters?.properties || {})
+          .map(([k, v]) => `${k}${v?.description ? '（' + v.description + '）' : ''}`).join('、');
+        return `### ${h.name}（相关度 ${h.score}）\n${f.description}\n参数：${params || '无'}`;
+      });
+      return {
+        ok: true,
+        text: `找到 ${hits.length} 个相关工具（名字：${names.join(', ')}）：\n\n${lines.join('\n\n')}\n\n这些工具已在下一轮自动可用，直接按参数调用即可。`,
+        data: { names, tools: hits.map((h) => h.def.function) },
+      };
     },
 
     async cmd_run(args = {}) {

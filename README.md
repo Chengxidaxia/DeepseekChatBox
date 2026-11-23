@@ -223,11 +223,15 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 - 工具定义由 `GET /api/tools/definitions` 下发，执行走 `POST /api/tools/call`，浏览器不接触 Key
 - 定义里的 `meta.web`（`search` / `fetch`）只用于前端区分「联网工具」与「本地工具」，发请求前会被剥掉；
   `meta.cmd` 用于前端按 `cmdEnabled` 开关过滤
-- **工具按需加载（搜索引擎）**：33 个工具如果每次全量声明，光定义就约 5360 tokens/轮。
+- **工具按需加载（搜索引擎）**：34 个工具如果每次全量声明，光定义就约 5360 tokens/轮。
   现在用 `public/js/tool-search.js` 的 BM25 检索：工具名 + 强关键词 + 描述分词打分，
   每轮只下发与当前问题相关的工具（设置 → 生成 → 「工具按需加载」可选 4/8/16/全部）。
   实测「算 128×0.85」只下发 calculator（约 150 tokens，省 97%）；
   **已在对话里调用过的工具会自动保留**，多轮工具循环不会断链。
+- **模型自己找工具（v1.9.0）**：`find_tool` 元工具常驻下发。模型判断现有工具不够用时，
+  自己调 `find_tool(query)` 搜索工具目录 → 服务端返回匹配工具的名字/描述/参数 →
+  前端把这些名字记入 `foundTools`，下一轮自动追加进 `tools`，模型直接调用。
+  实测「算一下折扣」→ calculator + percentage，「检查端口」→ port_check。
 - `token_count` 用官方 `DeepSeek-V4.1-Flash` 的 `tokenizer.json`（6.4 MB，存 `public/vendor/tokenizer/`），
   自研 Node BPE 实现（`server/tokenizer-core.cjs`，零依赖）：预分词三条正则 + ByteLevel 映射 + merges 合并。
   V3 / R1 / V4-Pro / V4.1-Flash 共用同一份 128000 基础词表，所以一个词表覆盖全部模型。
@@ -345,6 +349,10 @@ deepseek-chatbox/
 - **数据即文件**：删 `data/` 等于清空所有数据（含 Key）；迁移直接拷整个文件夹。
 - **峰谷定价**（2026-11 官方表）：模型按「百万 tokens」计费，分空闲/高峰两档，**空闲价是高峰价的一半**。
   高峰 = 周一至周五 09:00-12:00、14:00-18:00（北京时间）；其余时段、周末、法定节假日均为空闲。
+  **法定节假日自动判断（v1.9.0）**：`public/js/holiday.js` 按顺序查询多个免费 API
+  （jiejiariapi → xiaoai.me → pinjia.day → Nager.Date），任一个成功即用，结果按日期存 localStorage 缓存，
+  一天只请求一次；全部失败时退回「周末判断」不影响主流程。调休补班日（周末但要上班）按高峰处理。
+  这些源均在本机实测通过（2026-11-23），详见下方「节假日 API 调研」。
   设置 → 生成 里有 2 个模型 × 3 类用量 × 2 档 = **12 个价格**，默认值已按官方表填好：
 
   | 模型 | 缓存命中 空闲/高峰 | 缓存未命中 空闲/高峰 | 输出 空闲/高峰 |
@@ -369,7 +377,32 @@ deepseek-chatbox/
 
 ---
 
-## 6. 快捷键
+## 6. 节假日 API 调研（v1.9.0，2026-11-23 实测）
+
+为峰谷自动模式找中国法定节假日/调休数据源，以下均来自各服务官方文档或知名开源项目，
+并在本机逐一发起真实请求核验（连通性、状态码、返回结构），不是凭搜索摘要：
+
+| # | 服务 | 端点示例 | 本机实测 | 说明 |
+|---|---|---|---|---|
+| 1 | jiejiariapi | `api.jiejiariapi.com/v1/is_holiday?date=2026-10-01` | ✅ 200，2.6s | 单日判断最准；匿名 50 次/天，Key 100 次/天 |
+| 2 | jiejiariapi | `api.jiejiariapi.com/v1/holidays/2026` | ✅ 200，5.8s | 全年节假日 map |
+| 3 | jiejiariapi | `api.jiejiariapi.com/v1/workdays/2026` | ✅ 200，3.6s | 全年工作日（含调休） |
+| 4 | xiaoai.me | `publicapi.xiaoai.me/holiday/day?date=2026-10-01` | ✅ 200，1.2s | daytype 0/1/2/3 区分工作日/节假日/双休/调休 |
+| 5 | xiaoai.me | `publicapi.xiaoai.me/holiday/year?date=2026` | ✅ 200，0.3s | 全年数据，最快 |
+| 6 | pinjia.day | `pinjia.day/api/v1/holidays?year=2026` | ✅ 200，2.6s | 明确标注调休补班，含国务院文号 |
+| 7 | Nager.Date | `date.nager.at/api/v3/PublicHolidays/2026/CN` | ✅ 200，4.8s | 国际知名开源项目，100+ 国家，无 Key |
+| 8 | Nager.Date | `date.nager.at/api/v3/AvailableCountries` | ✅ 200，0.7s | 国家代码列表 |
+| 9 | chinese-days | `cdn.jsdelivr.net/npm/chinese-days@1.5.4/dist/chinese-days.json` | ✅ 200，1.3s | 开源库 JSON，2004–2026 + 农历节气 |
+| 10 | ShuYZ 中国节假日 | `raw.githubusercontent.com/lanceliao/china-holiday-calender/master/holidayAPI.json` | ✅ 200，0.9s | GitHub 开源，ICS + JSON，含补班数组 |
+| 11 | ShuYZ（国内镜像） | `www.shuyz.com/githubfiles/china-holiday-calender/master/holidayAPI.json` | ✅ 200，0.8s | 同上，国内直连 |
+| 12 | timor.tech | `timor.tech/api/holiday/info/2026-10-01` | ⚠️ 本机超时 | 知名免费源，本机网络不通（文档称已支持 HTTPS） |
+| 13 | jieri8.com | `www.jieri8.com/api/holidays.php?year=2026` | ❌ 404 | 文档地址已失效 |
+| 14 | Calendarific | `calendarific.com/api/v2/holidays?...` | ❌ 401 | 需 API Key（有免费额度） |
+| 15 | public-holidays-api.com | `.../v1/holidays?country=CN&year=2026` | ❌ 连接失败 | 本机不通 |
+
+程序实际使用 1/4/6/7 四个（单日查询、多源兜底），其余列作备选。
+
+## 7. 快捷键
 
 | 按键 | 动作 |
 |---|---|
@@ -380,7 +413,7 @@ deepseek-chatbox/
 
 ---
 
-## 7. 已验证
+## 8. 已验证
 
 - 代理连通性：伪造 Key 请求真实接口返回 `401 Authentication Fails`，错误体完整透传
 - 流式链路：演示模式跑到结束，DOM 校验 `msgs=2 / code=1 / table=1 / katex=2 / mermaid=1 / cites=1 / streaming=false`

@@ -81,7 +81,9 @@ export function migratePrices(p) {
   return out;
 }
 
-/** 北京时间是否处于高峰时段（周一至周五 9-12、14-18；法定节假日无法自动判断） */
+/** 北京时间是否处于高峰时段（周一至周五 9-12、14-18；法定节假日按空闲）。
+ *  同步版只按周末判断，供设置面板即时显示用。
+ */
 export function isPeakNow(now = new Date()) {
   // 转成 UTC+8 的「当地」时间分量
   const bj = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
@@ -89,6 +91,26 @@ export function isPeakNow(now = new Date()) {
   if (day === 0 || day === 6) return false;
   const minutes = bj.getHours() * 60 + bj.getMinutes();
   return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
+}
+
+/** 异步版：auto 模式下查节假日 API（带缓存），节假日按空闲，调休补班按高峰。
+ *  查不到时退回同步版（周末判断），不影响主流程。
+ */
+export async function isPeakNowAsync(now = new Date()) {
+  const base = isPeakNow(now);
+  // 周末本来就空闲，调休补班需要翻成高峰；工作日遇到法定节假日要翻成空闲
+  let holiday;
+  try {
+    const { getHoliday } = await import('./holiday.js');
+    holiday = await getHoliday(now);
+  } catch { return base; }
+  if (holiday.makeup) {
+    const bj = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+    const minutes = bj.getHours() * 60 + bj.getMinutes();
+    return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
+  }
+  if (holiday.off) return false;
+  return base;
 }
 
 function applySettings(obj) {

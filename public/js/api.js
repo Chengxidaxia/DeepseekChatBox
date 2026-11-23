@@ -224,6 +224,7 @@ export function buildPayload(history, {
   extraTools = [],
   toolQuery = '',     // 本轮用户问题，用于检索相关工具
   usedTools = [],     // 本对话已调用过的工具名，保证多轮不断链
+  foundTools = [],    // find_tool 检索到的工具名，下一轮追加下发
 } = {}) {
   const useModel = model ?? s.model;
   const useThinking = thinking ?? s.thinking;
@@ -245,13 +246,16 @@ export function buildPayload(history, {
   let localWebSearch = false;
   let localWebFetch = false;
   if (!officialWeb) {
-    // 联网工具由开关决定，始终带上；其余本地工具由搜索引擎按当前问题检索
+    // 联网工具由开关决定，始终带上；find_tool 元工具常驻，让模型能自己搜工具
     const always = [];
     for (const def of extraTools || []) {
       const web = def?.meta?.web;
       if (web === 'search' && useSearch) { always.push(def.function.name); localWebSearch = true; }
       else if (web === 'fetch' && useReadUrl) { always.push(def.function.name); localWebFetch = true; }
+      else if (def?.function?.name === 'find_tool' && s.localTools !== false) always.push('find_tool');
     }
+    // find_tool 上一轮找到的工具：本轮必须下发，否则模型拿到搜索结果却调不了
+    for (const n of foundTools || []) if (!always.includes(n)) always.push(n);
     if (s.localTools !== false) {
       const picked = pickTools(extraTools, toolQuery, {
         topK: Number(s.toolTopK) || 8,
