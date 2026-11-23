@@ -603,7 +603,8 @@ function messageView(m, versions) {
     if (m.content) bubble.append(h('div', { text: m.content }));
     wrap.append(bubble);
 
-    const acts = h('div', { class: 'msg-actions', style: { marginLeft: '8px', alignSelf: 'flex-end', marginBottom: '2px' } });
+    // 操作条放在气泡下方（官方就是气泡下面一行），不要挤在同一行
+    const acts = h('div', { class: 'msg-actions' });
     acts.append(
       actBtn('i-copy', t('copy'), () => copyMessage(m)),
       actBtn('i-edit', t('edit'), () => startEdit(m)),

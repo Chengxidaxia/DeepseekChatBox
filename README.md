@@ -221,7 +221,7 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 | `timestamp_convert` | 时间戳 ↔ 日期互转 | 秒/毫秒、时区偏移 |
 | `json_minify` | JSON 压缩成一行 | 返回节省字节数 |
 | `token_count` | **DeepSeek V4.1-Flash 分词器** | 本地精确算 token 数，可返回每个 token 的 id 与片段；离线、零费用 |
-| `qr_text` | **生成二维码（v1.10.0）** | 自研 QR 编码器（byte 模式，版本 1–10，L/M/Q/H），落盘为灰度 PNG 到 `data/qr/`，路径与规格一并返回；也可输出终端字符画 |
+| `qr_text` | **生成二维码（v1.10.0，v1.12.0 扩到 16KB）** | 自研 QR 编码器（byte 模式，版本 1–40，L/M/Q/H，单张最多 2953 字节 @L），落盘为灰度 PNG 到 `data/qr/`；输入 ≤16KB，超单张容量自动切成多张并标 `#i/N`，也可输出终端字符画 |
 | `stat_calc` | 数字统计 | 均值 / 中位数 / 众数 / 极差 / 样本与总体方差、标准差 / 四分位与 IQR / 1.5×IQR 异常值 |
 | `hex_view` | 十六进制查看与还原 | `toHex` 输出带偏移与 ASCII 侧栏的 hex dump；`fromHex` 容忍空格、`0x`、逗号分隔，非 UTF-8 时给 base64 |
 | `color_convert` | 颜色互转与对比度 | HEX / RGB / HSL / HSV、相对亮度、YIQ、对白/黑及自定义背景的 WCAG 对比度 |

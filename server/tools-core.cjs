@@ -453,18 +453,90 @@ function evalArithmetic(raw) {
  * 表数据取自 ISO/IEC 18004 附录；实现已与 qrcode-generator(MIT) 逐模块比对通过。
  * ------------------------------------------------------------------------- */
 const QR_RS_BLOCK = [
-  [1, 26, 19], [1, 26, 16], [1, 26, 13], [1, 26, 9],
-  [1, 44, 34], [1, 44, 28], [1, 44, 22], [1, 44, 16],
-  [1, 70, 55], [1, 70, 44], [2, 35, 17], [2, 35, 13],
-  [1, 100, 80], [2, 50, 32], [2, 50, 24], [4, 25, 9],
-  [1, 134, 108], [2, 67, 43], [2, 33, 15, 2, 34, 16], [2, 33, 11, 2, 34, 12],
-  [2, 86, 68], [4, 43, 27], [4, 43, 19], [4, 43, 15],
-  [2, 98, 78], [4, 49, 31], [2, 32, 14, 4, 33, 15], [4, 39, 13, 1, 40, 14],
-  [2, 121, 97], [2, 60, 38, 2, 61, 39], [4, 40, 18, 2, 41, 19], [4, 40, 14, 2, 41, 15],
-  [2, 146, 116], [3, 58, 36, 2, 59, 37], [4, 36, 16, 4, 37, 17], [4, 36, 12, 4, 37, 13],
-  [2, 86, 68, 2, 87, 69], [4, 69, 43, 1, 70, 44], [6, 43, 19, 2, 44, 20], [6, 43, 15, 2, 44, 16],
+  [1,26,19], [1,26,16], [1,26,13], [1,26,9],   // v1 L/M/Q/H
+  [1,44,34], [1,44,28], [1,44,22], [1,44,16],   // v2 L/M/Q/H
+  [1,70,55], [1,70,44], [2,35,17], [2,35,13],   // v3 L/M/Q/H
+  [1,100,80], [2,50,32], [2,50,24], [4,25,9],   // v4 L/M/Q/H
+  [1,134,108], [2,67,43], [2,33,15,2,34,16], [2,33,11,2,34,12],   // v5 L/M/Q/H
+  [2,86,68], [4,43,27], [4,43,19], [4,43,15],   // v6 L/M/Q/H
+  [2,98,78], [4,49,31], [2,32,14,4,33,15], [4,39,13,1,40,14],   // v7 L/M/Q/H
+  [2,121,97], [2,60,38,2,61,39], [4,40,18,2,41,19], [4,40,14,2,41,15],   // v8 L/M/Q/H
+  [2,146,116], [3,58,36,2,59,37], [4,36,16,4,37,17], [4,36,12,4,37,13],   // v9 L/M/Q/H
+  [2,86,68,2,87,69], [4,69,43,1,70,44], [6,43,19,2,44,20], [6,43,15,2,44,16],   // v10 L/M/Q/H
+  [4,101,81], [1,80,50,4,81,51], [4,50,22,4,51,23], [3,36,12,8,37,13],   // v11 L/M/Q/H
+  [2,116,92,2,117,93], [6,58,36,2,59,37], [4,46,20,6,47,21], [7,42,14,4,43,15],   // v12 L/M/Q/H
+  [4,133,107], [8,59,37,1,60,38], [8,44,20,4,45,21], [12,33,11,4,34,12],   // v13 L/M/Q/H
+  [3,145,115,1,146,116], [4,64,40,5,65,41], [11,36,16,5,37,17], [11,36,12,5,37,13],   // v14 L/M/Q/H
+  [5,109,87,1,110,88], [5,65,41,5,66,42], [5,54,24,7,55,25], [11,36,12,7,37,13],   // v15 L/M/Q/H
+  [5,122,98,1,123,99], [7,73,45,3,74,46], [15,43,19,2,44,20], [3,45,15,13,46,16],   // v16 L/M/Q/H
+  [1,135,107,5,136,108], [10,74,46,1,75,47], [1,50,22,15,51,23], [2,42,14,17,43,15],   // v17 L/M/Q/H
+  [5,150,120,1,151,121], [9,69,43,4,70,44], [17,50,22,1,51,23], [2,42,14,19,43,15],   // v18 L/M/Q/H
+  [3,141,113,4,142,114], [3,70,44,11,71,45], [17,47,21,4,48,22], [9,39,13,16,40,14],   // v19 L/M/Q/H
+  [3,135,107,5,136,108], [3,67,41,13,68,42], [15,54,24,5,55,25], [15,43,15,10,44,16],   // v20 L/M/Q/H
+  [4,144,116,4,145,117], [17,68,42], [17,50,22,6,51,23], [19,46,16,6,47,17],   // v21 L/M/Q/H
+  [2,139,111,7,140,112], [17,74,46], [7,54,24,16,55,25], [34,37,13],   // v22 L/M/Q/H
+  [4,151,121,5,152,122], [4,75,47,14,76,48], [11,54,24,14,55,25], [16,45,15,14,46,16],   // v23 L/M/Q/H
+  [6,147,117,4,148,118], [6,73,45,14,74,46], [11,54,24,16,55,25], [30,46,16,2,47,17],   // v24 L/M/Q/H
+  [8,132,106,4,133,107], [8,75,47,13,76,48], [7,54,24,22,55,25], [22,45,15,13,46,16],   // v25 L/M/Q/H
+  [10,142,114,2,143,115], [19,74,46,4,75,47], [28,50,22,6,51,23], [33,46,16,4,47,17],   // v26 L/M/Q/H
+  [8,152,122,4,153,123], [22,73,45,3,74,46], [8,53,23,26,54,24], [12,45,15,28,46,16],   // v27 L/M/Q/H
+  [3,147,117,10,148,118], [3,73,45,23,74,46], [4,54,24,31,55,25], [11,45,15,31,46,16],   // v28 L/M/Q/H
+  [7,146,116,7,147,117], [21,73,45,7,74,46], [1,53,23,37,54,24], [19,45,15,26,46,16],   // v29 L/M/Q/H
+  [5,145,115,10,146,116], [19,75,47,10,76,48], [15,54,24,25,55,25], [23,45,15,25,46,16],   // v30 L/M/Q/H
+  [13,145,115,3,146,116], [2,74,46,29,75,47], [42,54,24,1,55,25], [23,45,15,28,46,16],   // v31 L/M/Q/H
+  [17,145,115], [10,74,46,23,75,47], [10,54,24,35,55,25], [19,45,15,35,46,16],   // v32 L/M/Q/H
+  [17,145,115,1,146,116], [14,74,46,21,75,47], [29,54,24,19,55,25], [11,45,15,46,46,16],   // v33 L/M/Q/H
+  [13,145,115,6,146,116], [14,74,46,23,75,47], [44,54,24,7,55,25], [59,46,16,1,47,17],   // v34 L/M/Q/H
+  [12,151,121,7,152,122], [12,75,47,26,76,48], [39,54,24,14,55,25], [22,45,15,41,46,16],   // v35 L/M/Q/H
+  [6,151,121,14,152,122], [6,75,47,34,76,48], [46,54,24,10,55,25], [2,45,15,64,46,16],   // v36 L/M/Q/H
+  [17,152,122,4,153,123], [29,74,46,14,75,47], [49,54,24,10,55,25], [24,45,15,46,46,16],   // v37 L/M/Q/H
+  [4,152,122,18,153,123], [13,74,46,32,75,47], [48,54,24,14,55,25], [42,45,15,32,46,16],   // v38 L/M/Q/H
+  [20,147,117,4,148,118], [40,75,47,7,76,48], [43,54,24,22,55,25], [10,45,15,67,46,16],   // v39 L/M/Q/H
+  [19,148,118,6,149,119], [18,75,47,31,76,48], [34,54,24,34,55,25], [20,45,15,61,46,16],   // v40 L/M/Q/H
 ];
-const QR_ALIGN = [[], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+const QR_ALIGN = [
+  [],
+  [6,18],
+  [6,22],
+  [6,26],
+  [6,30],
+  [6,34],
+  [6,22,38],
+  [6,24,42],   // v1-v8
+  [6,26,46],
+  [6,28,50],
+  [6,30,54],
+  [6,32,58],
+  [6,34,62],
+  [6,26,46,66],
+  [6,26,48,70],
+  [6,26,50,74],   // v9-v16
+  [6,30,54,78],
+  [6,30,56,82],
+  [6,30,58,86],
+  [6,34,62,90],
+  [6,28,50,72,94],
+  [6,26,50,74,98],
+  [6,30,54,78,102],
+  [6,28,54,80,106],   // v17-v24
+  [6,32,58,84,110],
+  [6,30,58,86,114],
+  [6,34,62,90,118],
+  [6,26,50,74,98,122],
+  [6,30,54,78,102,126],
+  [6,26,52,78,104,130],
+  [6,30,56,82,108,134],
+  [6,34,60,86,112,138],   // v25-v32
+  [6,30,58,86,114,142],
+  [6,34,62,90,118,146],
+  [6,30,54,78,102,126,150],
+  [6,24,50,76,102,128,154],
+  [6,28,54,80,106,132,158],
+  [6,32,58,84,110,136,162],
+  [6,26,54,82,110,138,166],
+  [6,30,58,86,114,142,170],   // v33-v40
+];
+
 const QR_EC_INDEX = { L: 0, M: 1, Q: 2, H: 3 };
 const QR_EC_BITS = { L: 1, M: 0, Q: 3, H: 2 };
 
@@ -680,15 +752,25 @@ function qrLostPoint(matrix, size) {
   return lost;
 }
 
-/** 生成二维码模块矩阵：byte 模式，自动选版本（1-10）与最优掩码 */
+/** 某个版本/纠错级能装下的最大字节数（byte 模式：4 位模式 + 8/16 位长度 + 8 位/字节） */
+function qrCapacity(version, level) {
+  const totalData = qrBlocks(version, level).reduce((s, b) => s + b.data, 0);
+  return Math.floor((totalData * 8 - 4 - (version <= 9 ? 8 : 16)) / 8);
+}
+const QR_MAX_VERSION = 40;
+const QR_INPUT_MAX = 16384;   // 工具接受的内容上限（超出会拆成多张二维码，单张最多 2953 字节）
+
+/** 生成二维码模块矩阵：byte 模式，自动选版本（1-40）与最优掩码 */
 function qrMatrix(text, level = 'M') {
   const bytes = [...Buffer.from(String(text), 'utf8')];
   let version = 0;
-  for (version = 1; version <= 10; version++) {
+  for (version = 1; version <= QR_MAX_VERSION; version++) {
     const totalData = qrBlocks(version, level).reduce((s, b) => s + b.data, 0);
     if (4 + (version <= 9 ? 8 : 16) + bytes.length * 8 <= totalData * 8) break;
   }
-  if (version > 10) throw new Error('内容过长：QR 上限约 270 字节（版本 10）。请缩短文本，或改用别的短链接');
+  if (version > QR_MAX_VERSION) {
+    throw new Error(`内容过长：单张二维码上限 ${qrCapacity(QR_MAX_VERSION, level)} 字节（版本 40 / ${level} 级纠错）`);
+  }
   const cw = qrCodewords(bytes, version, level);
   let best = null;
   for (let mask = 0; mask < 8; mask++) {
@@ -1406,11 +1488,11 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       type: 'function',
       function: {
         name: 'qr_text',
-        description: '把文本或网址生成二维码，保存成本机 PNG 图片并返回文件路径与尺寸；也可以返回终端字符画。用户要生成二维码、让手机扫码打开链接时用（内容上限约 270 字节）。',
+        description: '把文本或网址生成二维码，保存成本机 PNG 图片并返回文件路径与尺寸；也可以返回终端字符画。用户要生成二维码、让手机扫码打开链接时用。支持到版本 40（单张最多 2953 字节 @L 级），内容 16KB 以内会自动切成多张并按 #i/N 编号。',
         parameters: {
           type: 'object',
           properties: {
-            text: { type: 'string', description: '要编码的内容，一般是网址或短文本' },
+            text: { type: 'string', description: '要编码的内容，最多 16384 字节；超过单张容量（2953 字节 @L）会自动切成多张带 #i/N 编号的二维码' },
             level: { type: 'string', enum: ['L', 'M', 'Q', 'H'], description: '纠错等级，默认 M（越高越抗污损，容量越小）' },
             scale: { type: 'integer', description: '每个模块的像素数，默认 8，范围 2-20' },
             ascii: { type: 'boolean', description: '是否同时返回终端字符画二维码，默认 false' },
@@ -2352,29 +2434,74 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       const lv = String(args.level || 'M').toUpperCase();
       const level = ['L', 'M', 'Q', 'H'].includes(lv) ? lv : 'M';
       const scale = Math.min(20, Math.max(2, Number(args.scale) || 8));
-      let qr;
-      try { qr = qrMatrix(text, level); } catch (e) { return { ok: false, text: e.message }; }
-      let file = '';
-      try {
-        const base = path.join(dataDir || os.tmpdir(), 'qr');
-        const name = String(args.filename || '').replace(/[^\w.-]+/g, '_').slice(0, 40) || `qr-${Date.now()}`;
-        file = path.join(base, name.replace(/\.png$/i, '') + '.png');
-        fs.mkdirSync(base, { recursive: true });
-        fs.writeFileSync(file, qrPng(qr.matrix, scale));
-      } catch (e) {
-        file = '';
+      const buf = Buffer.from(text, 'utf8');
+      if (buf.length > QR_INPUT_MAX) {
+        return { ok: false, text: `内容 ${buf.length} 字节，超过上限 ${QR_INPUT_MAX} 字节。请精简内容，或先压缩（如 base64 前先 gzip）。` };
       }
+
+      // 单张装不下就按「第 i/N 张」切段（切在 UTF-8 字符边界上），每段各自成一个二维码
+      const cap = qrCapacity(QR_MAX_VERSION, level);
+      const reserve = 12;                         // 给 "#1/6\n" 这类前缀留位置
+      const chunks = [];
+      if (buf.length <= cap) {
+        chunks.push(buf);
+      } else {
+        const step = Math.max(64, cap - reserve);
+        let start = 0;
+        while (start < buf.length) {
+          let end = Math.min(buf.length, start + step);
+          while (end < buf.length && (buf[end] & 0xc0) === 0x80) end--;   // 不切开多字节字符
+          if (end <= start) end = Math.min(buf.length, start + step);
+          chunks.push(buf.subarray(start, end));
+          start = end;
+        }
+      }
+      const total = chunks.length;
+
+      let base = '';
+      try {
+        base = path.join(dataDir || os.tmpdir(), 'qr');
+        fs.mkdirSync(base, { recursive: true });
+      } catch { base = ''; }
+      const rawName = String(args.filename || '').replace(/[^\w.-]+/g, '_').slice(0, 40) || `qr-${Date.now()}`;
+      const stem = rawName.replace(/\.png$/i, '');
+
+      const files = [];
+      let firstQr = null;
+      for (let i = 0; i < total; i++) {
+        const body = chunks[i].toString('utf8');
+        const payload = total > 1 ? `#${i + 1}/${total}\n${body}` : body;
+        let qr;
+        try { qr = qrMatrix(payload, level); } catch (e) { return { ok: false, text: e.message }; }
+        if (!firstQr) firstQr = qr;
+        if (!base) continue;
+        const file = path.join(base, (total > 1 ? `${stem}-${i + 1}of${total}` : stem) + '.png');
+        try {
+          fs.writeFileSync(file, qrPng(qr.matrix, scale));
+          files.push(file);
+        } catch { /* 单张写失败不影响其它 */ }
+      }
+
       const shown = text.length > 160 ? text.slice(0, 160) + '…' : text;
       const lines = [];
-      if (file) lines.push(`二维码已保存：${file}`);
-      else lines.push('（图片写入失败，已改为只输出字符画）');
+      if (files.length === 1) lines.push(`二维码已保存：${files[0]}`);
+      else if (files.length > 1) {
+        lines.push(`内容 ${buf.length} 字节，单张放不下，已切成 ${total} 张二维码（扫码顺序按文件名/t 标题里的 #i/N）：`);
+        for (const f of files) lines.push(`  ${f}`);
+      } else {
+        lines.push('（图片写入失败，已改为只输出字符画）');
+      }
       lines.push(`内容：${shown}`);
-      lines.push(`规格：版本 ${qr.version}，${qr.size}×${qr.size} 模块，纠错 ${level}，掩码 ${qr.mask}，${scale}px/模块`);
-      if (args.ascii || !file) lines.push('', qrAscii(qr.matrix));
+      lines.push(`规格：版本 ${firstQr.version}，${firstQr.size}×${firstQr.size} 模块，纠错 ${level}，掩码 ${firstQr.mask}，${scale}px/模块${total > 1 ? `，共 ${total} 张` : ''}`);
+      if (args.ascii || !files.length) lines.push('', qrAscii(firstQr.matrix));
       return {
         ok: true,
         text: lines.join('\n'),
-        data: { path: file, version: qr.version, size: qr.size, level, mask: qr.mask, scale, ascii: qrAscii(qr.matrix) },
+        data: {
+          path: files[0] || '', paths: files, parts: total, bytes: buf.length,
+          version: firstQr.version, size: firstQr.size, level, mask: firstQr.mask, scale,
+          ascii: qrAscii(firstQr.matrix),
+        },
       };
     },
 
@@ -2749,4 +2876,4 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
   return { definitions, call, names: Object.keys(impl) };
 }
 
-module.exports = { createTools, _internals: { shortDate, htmlToText, decodeBuf, sniffCharset, dropNoiseBlocks, pickMainHtml } };
+module.exports = { createTools, _internals: { shortDate, htmlToText, decodeBuf, sniffCharset, dropNoiseBlocks, pickMainHtml, qrMatrix, qrCapacity, QR_MAX_VERSION } };
