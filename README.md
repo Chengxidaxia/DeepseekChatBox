@@ -38,7 +38,7 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 - 旧版（存在浏览器 localStorage）首次打开会自动迁移到服务端，迁移后**删除浏览器里的副本**
 - 换浏览器、清缓存、换电脑拷走整个文件夹，聊天记录与 Key 都还在
 
-> 端口被占用时：`set PORT=17331 && node server.mjs`，或 `node server.mjs --port` 不支持，请用环境变量。
+> 端口被占用时：`node server.mjs --port 17331`（或 `set PORT=17331 && node server.mjs`）；只想本机访问加 `--local-only`。
 > 若本机设置了环境变量 `DEEPSEEK_API_KEY`，页面里可以不填 Key（服务端自动补 Authorization）。
 
 ### 与官方 chat-demo 的关系
@@ -360,7 +360,7 @@ deepseek-chatbox/
   | `deepseek-flash` | 0.02 / 0.04 | 1 / 2 | 4 / 8 |
   | `deepseek-v4-pro` | 0.15 / 0.30 | 4.5 / 9 | 13.5 / 27 |
 
-  - 时段判断可切「自动识别 / 按空闲价 / 按高峰价」；**法定节假日程序无法自动判断**，遇到假期手动切「按空闲价」
+  - 时段判断可切「自动识别 / 按空闲价 / 按高峰价」；自动模式走上面的节假日 API，识别不到时退回周末规则
   - 只估算模型 token；Search / Fetch / 文件解析 / TTS / ASR 不在此列（官方另计）
   - 旧版单档价格会自动迁移：旧值视为高峰价，空闲价按一半折算，并写回 `data/settings.json`
 - **联网工具限制**：官方模式下 `deepseek_web_search` / `deepseek_read_url` 只能配 `deepseek-flash`；声明后 `temperature / top_p / stop / response_format` 会被服务端忽略；用过联网工具的回答不能再「继续生成」；并且**只要同时声明了任何本地 function，官方联网工具就静默失效**（v1.6.0 起默认改走本地联网，不受这条限制）。
