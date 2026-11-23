@@ -1247,6 +1247,7 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   justify-content: center;
   transition: background .2s, opacity .2s;
 }
+.send-btn .icon { width: 20px; height: 20px; }   /* 箭头比默认 16px 大一档，跟官方比例接近 */
 .send-btn:hover { background: var(--btn-primary-hover); }
 .send-btn:disabled { opacity: .4; cursor: not-allowed; }
 .send-btn:disabled:hover { background: var(--btn-primary-fill); }

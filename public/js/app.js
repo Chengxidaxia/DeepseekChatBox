@@ -1714,6 +1714,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
     renderChat();
     renderSidebar();
     scrollToBottom(true);
+    autoBalance();            // 回答完余额可能变了，顺手刷一次（60 秒内不重复）
   }
 }
 
@@ -2591,17 +2592,32 @@ function effortMenu() {
 
 
 /* ------------------------------ 数据 ------------------------------ */
-async function updateBalance() {
-  if (!hasApiKey() && !settings.mock) { toast(t('needKey')); return; }
-  els.balanceHint.textContent = t('balanceLoading');
+let balanceAt = 0;
+let balanceBusy = false;
+/** 查余额。silent=true 用于自动查询：不弹 toast、失败就保持原样，避免打断 */
+async function updateBalance({ silent = false } = {}) {
+  if (!hasApiKey() && !settings.mock) { if (!silent) toast(t('needKey')); return; }
+  if (balanceBusy) return;
+  balanceBusy = true;
+  const before = els.balanceHint.textContent;
+  if (!silent || !before || before === '—') els.balanceHint.textContent = t('balanceLoading');
   try {
     const b = await getBalance();
     const info = (b.balance_infos || [])[0];
     els.balanceHint.textContent = info ? `${info.currency} ${info.total_balance}` : (b.is_available ? '可用' : '不可用');
+    balanceAt = Date.now();
   } catch (e) {
-    els.balanceHint.textContent = t('balanceFail');
-    toast(e.message);
+    if (silent) els.balanceHint.textContent = before || '—';
+    else { els.balanceHint.textContent = t('balanceFail'); toast(e.message); }
+  } finally {
+    balanceBusy = false;
   }
+}
+
+/** 自动查询：打开页面一次；之后每完成一轮回答再刷一次（60 秒内不重复） */
+function autoBalance(force = false) {
+  if (!force && Date.now() - balanceAt < 60000) return;
+  void updateBalance({ silent: true });
 }
 
 function updateBalanceHintFromUsage() {
@@ -2965,6 +2981,7 @@ async function boot() {
   } catch {}
 
   refreshModels();
+  autoBalance(true);          // 打开页面自动查一次余额（静默，没配 Key 就直接跳过）
 
   const q = params.get('q');
   if (q) {

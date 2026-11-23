@@ -20,7 +20,7 @@ const _createTools = typeof createTools !== 'undefined' ? createTools : require(
 const _createLan = typeof createLan !== 'undefined' ? createLan : require('../server/lan-core.cjs').createLan;
 
 const APP_ID = 'deepseek-chatbox';
-const VERSION = '1.12.1';
+const VERSION = '1.12.2';
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
 
