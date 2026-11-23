@@ -122,6 +122,7 @@ function convTitle(c) {
 function renderSidebar() {
   const list = state.searchQuery ? searchConversations(state.searchQuery) : allConversations();
   els.chatList.replaceChildren();
+  syncTopbarTitle(currentConversation());
 
   const groups = allGroups();
   const collapsed = new Set(ui.collapsedGroups || []);
