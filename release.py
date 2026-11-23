@@ -93,7 +93,10 @@ def bump(ver: str) -> None:
     if os.path.exists(GREEN_MANUAL):
         with open(GREEN_MANUAL, encoding='utf-8-sig') as f:
             s = f.read()
+        # 标题「绿色版 vX」+ 正文「本包是 vX 的源码快照」两处都要改，
+        # 以前只改标题，导致正文长期残留旧版本号（v1.11.0）
         n = re.sub(r'(绿色版 v)\d+\.\d+\.\d+', rf'\g<1>{ver}', s, count=1)
+        n = re.sub(r'(本包是 v)\d+\.\d+\.\d+( 的源码快照)', rf'\g<1>{ver}\g<2>', n, count=1)
         if n != s:
             with open(GREEN_MANUAL, 'w', encoding='utf-8-sig', newline='') as f:
                 f.write(n)
