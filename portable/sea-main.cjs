@@ -165,7 +165,7 @@ function lanAddresses(limit = 2) {
   return out.sort((x, y) => rank(x) - rank(y)).slice(0, limit);
 }
 
-const tools = _createTools({ store, log: (...a) => console.log('[tools]', ...a) });
+const tools = _createTools({ store, log: (...a) => console.log('[tools]', ...a), dataDir: DATA_DIR });
 
 // 默认监听所有网卡：双击就能用手机打开（口令见启动日志）。
 // 只想本机用就加 --local-only；--lan 仍保留，等同于默认行为。
