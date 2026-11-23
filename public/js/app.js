@@ -5,7 +5,7 @@ import {
   createConversation, updateConversation, deleteConversation, saveConversations, groupConversations,
   searchConversations, initStore, hasApiKey, uploadAttachment, attachmentUrl, flushNow,
   allGroups, getGroup, createGroup, updateGroup, deleteGroup, moveConversationToGroup,
-  effectiveSettings, hasCustomScope, isPeakNow,
+  effectiveSettings, hasCustomScope, isPeakNow, isPeakAt,
 } from './store.js';
 import { setLang, applyStatic, t, getLang } from './i18n.js';
 import { renderMarkdown, hydrateMermaid, toPlainText, resetMermaidTheme } from './markdown.js';
@@ -180,39 +180,17 @@ function groupSection(g, items, isCollapsed) {
   head.append(h('span', { class: 'name', text: g.name, title: g.name }));
   head.append(h('span', { class: 'count', text: String(items.length) }));
 
-  const tools = h('div', { class: 'folder-actions' });
-  const mk = (iconId, title, fn) => {
-    const b = h('button', { class: 'icon-btn sm', type: 'button', title, onclick: (e) => { e.stopPropagation(); fn(e); } }, [iconEl(iconId)]);
-    return b;
-  };
-  tools.append(
-    mk('i-plus', '在此分组新建对话', () => {
-      newChat();
-      const conv = ensureConversation();
-      moveConversationToGroup(conv.id, g.id);
-      renderSidebar();
-    }),
-    mk('i-settings', '分组设置', () => openScopeSettings({ kind: 'group', id: g.id, onChange: onScopeChange })),
-    mk('i-edit', '重命名分组', async () => {
-      const name = await appPrompt({ title: '重命名分组', value: g.name, okText: '保存' });
-      if (name === null) return;
-      updateGroup(g.id, { name: name.trim() || g.name });
-      renderSidebar();
-    }),
-    mk('i-trash', '删除分组', async () => {
-      const ok = await appConfirm({
-        title: '删除分组',
-        message: `删除分组「${g.name}」？组内对话会退回未分组，不会被删除。`,
-        okText: '删除',
-        danger: true,
-      });
-      if (!ok) return;
-      deleteGroup(g.id);
-      renderSidebar();
-      renderChat();
-    }),
-  );
-  head.append(tools);
+  // 与对话行一致：右侧「…」开关式菜单（hover 出现，点同一个再点一次收起）
+  const mask = h('div', { class: 'row-mask folder-mask' });
+  const more = h('button', { class: 'icon-btn', type: 'button', title: t('more'), 'aria-label': t('more') }, [iconEl('i-more')]);
+  more.addEventListener('click', (e) => {
+    e.stopPropagation();                                  // 别把点击冒泡成「折叠分组」
+    if (state.menu && state.menuAnchor === more) { closeMenu(); return; }
+    head.classList.add('menu-open');
+    folderMenu(g, items, more, () => head.classList.remove('menu-open'));
+  });
+  mask.append(more);
+  head.append(mask);
   head.addEventListener('click', () => {
     const set = new Set(ui.collapsedGroups || []);
     if (set.has(g.id)) set.delete(g.id);
@@ -230,6 +208,46 @@ function groupSection(g, items, isCollapsed) {
     }
   }
   return wrap;
+}
+
+/* 分组行「…」菜单：新建对话 / 分组设置 / 重命名 / 多选本组 / 删除 */
+function folderMenu(g, items, anchor, onClose) {
+  const mk = (iconId, text, fn, extra = '') => {
+    const b = h('button', { class: 'menu-item' + extra, type: 'button' }, [iconEl(iconId), h('span', { text })]);
+    b.addEventListener('click', () => { closeMenu(); fn(); });
+    return b;
+  };
+  const menu = [
+    mk('i-plus', '在此分组新建对话', () => {
+      newChat();
+      const conv = ensureConversation();
+      moveConversationToGroup(conv.id, g.id);
+      renderSidebar();
+    }),
+    mk('i-edit', '重命名分组', async () => {
+      const name = await appPrompt({ title: '重命名分组', value: g.name, okText: '保存' });
+      if (name === null) return;
+      updateGroup(g.id, { name: name.trim() || g.name });
+      renderSidebar();
+    }),
+    mk('i-settings', '分组设置', () => openScopeSettings({ kind: 'group', id: g.id, onChange: onScopeChange })),
+    h('div', { class: 'menu-sep' }),
+    mk('i-multiselect', t('multiSelect'), () => enterSelection(items.map((c) => c.id))),
+    mk('i-trash', '删除分组', async () => {
+      const ok = await appConfirm({
+        title: '删除分组',
+        message: `删除分组「${g.name}」？组内对话会退回未分组，不会被删除。`,
+        okText: '删除',
+        danger: true,
+      });
+      if (!ok) return;
+      deleteGroup(g.id);
+      renderSidebar();
+      renderChat();
+    }, ' danger'),
+  ];
+  showMenu(anchor, menu, 'down');
+  state.menuOnClose = onClose || null;
 }
 
 function convRow(c) {
@@ -363,9 +381,10 @@ async function removeConversation(c) {
 }
 
 /* ------------------------------ 多选（批量） ------------------------------ */
-function enterSelection(firstId) {
+function enterSelection(seed) {
   closeMenu();
-  state.selection = new Set(firstId ? [firstId] : []);
+  const ids = Array.isArray(seed) ? seed : (seed ? [seed] : []);
+  state.selection = new Set(ids);
   renderSidebar();
 }
 
@@ -924,8 +943,8 @@ function usageLine(m, costOv) {
     nodes.push(h('span', {
       text: `${t('estimated')} ${cost.text}（${cost.peak ? t('peakRate') : t('idleRate')}）`,
       title: cost.peak
-        ? '按高峰时段价格估算（周一至周五 9:00-12:00 / 14:00-18:00 北京时间；法定节假日除外）'
-        : '按空闲时段价格估算',
+        ? '按消息发送时段的价格估算（高峰：周一至周五 9:00-12:00 / 14:00-18:00 北京时间；法定节假日除外），发送后不再变动'
+        : '按消息发送时段的价格估算（空闲时段），发送后不再变动',
     }));
   }
   return h('div', { class: 'msg-meta' }, nodes);
@@ -949,18 +968,21 @@ async function refreshPeakState() {
   renderChat(); // 峰谷状态变了，费用显示要重算
 }
 
-function pickPrice(modelId) {
+function pickPrice(modelId, atMs) {
   const p = settings.prices || {};
   const key = String(modelId || settings.model).includes('pro') ? 'pro' : 'flash';
   const bucket = p[key] || {};
   const mode = settings.peakMode || 'auto';
-  const peak = mode === 'peak' || (mode === 'auto' && (peakState?.peak ?? isPeakNow()));
+  // auto 模式按「消息发送时刻」判断峰谷；强制模式仍按用户在设置里选的档
+  const peak = mode === 'peak'
+    || (mode === 'auto' && (atMs ? isPeakAt(atMs) : (peakState?.peak ?? isPeakNow())));
   const at = (k) => Number(bucket[k + (peak ? 'Peak' : 'Idle')]) || 0;
   return { peak, inMiss: at('miss'), inHit: at('hit'), out: at('out') };
 }
 
-function estimateCost(m) {
-  const pr = pickPrice(m.model);
+/** 按当前设置与指定时刻算一次费用（不读快照） */
+function computeCost(m, atMs) {
+  const pr = pickPrice(m.model, atMs);
   if (!pr.inMiss && !pr.inHit && !pr.out) return null;
   const u = m.usage || {};
   const miss = u.prompt_cache_miss_tokens ?? u.prompt_tokens ?? 0;
@@ -973,7 +995,24 @@ function estimateCost(m) {
     text: cur + cost.toFixed(cost < 0.01 ? 4 : 2),
     peak: pr.peak,
     value: cost,
+    at: atMs || Date.now(),
   };
+}
+
+/** 收到 usage 那一刻把费用定档：此后不再随当前时间/改价重算（历史价格不回溯）。
+ *  存进消息里，跟会话一起落盘。
+ */
+function stampCost(m, force = false) {
+  if (!m || !m.usage) return;
+  if (m.cost && !force) return;
+  const c = computeCost(m, m.createdAt || Date.now());
+  m.cost = c ? { text: c.text, value: c.value, peak: c.peak, at: c.at } : null;
+}
+
+function estimateCost(m) {
+  if (m.cost && m.cost.text) return m.cost;              // 发送时已定档，直接用
+  const c = computeCost(m, m.createdAt);                 // 老消息按发送时刻回算
+  return c ? { text: c.text, peak: c.peak, value: c.value } : null;
 }
 
 /** 合并多轮「纯工具」往返的用量，输出一行统计（token 求和、费用相加） */
@@ -1067,7 +1106,8 @@ function updateComposerState() {
     ? '官方联网工具与本地工具不能同时使用（接口限制），可在设置 → 生成里切换为「本地联网」'
     : '本地工具：余额 / 模型 / 时间 / 历史搜索 / 用量 / 联网搜索';
   els.effort.classList.toggle('hidden', !e.thinking);
-  els.effortLabel.textContent = e.effort || 'high';
+  const effortName = { low: t('effortLow'), high: t('effortHigh'), max: t('effortMax') }[e.effort || 'high'];
+  els.effortLabel.textContent = effortName || (e.effort || 'high');
   els.modelName.textContent = modelInfo(e.model).name || e.model;
   els.mockBadge.classList.toggle('hidden', !settings.mock);
   els.streamBadge.classList.toggle('hidden', !state.streaming);
@@ -1374,6 +1414,7 @@ async function streamRound({ assistant, payload }) {
             break;
           case 'usage':
             assistant.usage = ev.usage;
+            stampCost(assistant, true);   // 发送时刻定档，之后不再漂
             break;
           case 'finish':
             assistant.finishReason = ev.reason;
@@ -2039,7 +2080,9 @@ function showMenu(anchor, content, placement = 'down') {
   setTimeout(() => {
     // 换菜单时旧监听已由 closeMenu 清掉，这里保证同一时刻只有一个
     const off = (e) => {
-      if (!pop.contains(e.target) && e.target !== anchor) closeMenu();
+      // 点锚点本身（含它的子元素，比如 svg/use）不算「点外面」，
+      // 交给按钮的 click 做开关判定，否则 mousedown 先收起、click 又重开，看起来就是「点不掉」
+      if (!pop.contains(e.target) && !(anchor.contains && anchor.contains(e.target))) closeMenu();
     };
     state.menuOff = off;
     document.addEventListener('mousedown', off);
@@ -2048,6 +2091,8 @@ function showMenu(anchor, content, placement = 'down') {
 }
 
 function modelMenu() {
+  // 同一个按钮再点一次 = 收起（开关式）
+  if (state.menu && state.menuAnchor === $('#btnModel')) { closeMenu(); return; }
   const items = state.models.map((m) => {
     const curModel = eff().model;
     const item = h('button', { class: 'menu-item' + (m.id === curModel ? ' selected' : ''), type: 'button' }, [
@@ -2079,19 +2124,53 @@ function modelMenu() {
   showMenu($('#btnModel'), [...items, h('div', { class: 'menu-sep' }), refresh]);
 }
 
+/** 思考强度面板：档位列表 + 滑条（对齐「上下文用量」那种面板样式）。
+ *  同一个按钮再点一次 = 收起（开关式），不会出现「点不掉」。 */
+const EFFORT_LEVELS = ['low', 'high', 'max'];
 function effortMenu() {
-  const levels = [['low', t('effortLow')], ['high', t('effortHigh')], ['max', t('effortMax')]];
-  const curEffort = eff().effort;
-  const items = levels.map(([lv, label]) => {
-    const b = h('button', { class: 'menu-item' + (curEffort === lv ? ' selected' : ''), type: 'button' }, [
-      h('div', {}, [h('div', { text: label }), h('span', { class: 'desc', text: lv })]),
-      curEffort === lv ? iconEl('i-check', 'check') : null,
-    ]);
-    b.addEventListener('click', () => { setEffective('effort', lv); closeMenu(); });
-    return b;
+  if (state.menu && state.menuAnchor === els.effort) { closeMenu(); return; }
+  const names = { low: t('effortLow'), high: t('effortHigh'), max: t('effortMax') };
+  const cur = eff().effort || 'high';
+  let idx = Math.max(0, EFFORT_LEVELS.indexOf(cur));
+
+  const bigVal = h('b', { class: 'effort-big', text: names[EFFORT_LEVELS[idx]] });
+  const lvTag = h('span', { class: 'effort-tag', text: EFFORT_LEVELS[idx] });
+  const footVal = h('b', { text: names[EFFORT_LEVELS[idx]] });
+  const dots = EFFORT_LEVELS.map((lv, i) => h('i', { class: 'effort-dot' + (i === idx ? ' on' : ''), title: names[lv] }));
+
+  const paint = () => {
+    const lv = EFFORT_LEVELS[idx];
+    bigVal.textContent = names[lv];
+    lvTag.textContent = lv;
+    footVal.textContent = names[lv];
+    dots.forEach((d, i) => d.classList.toggle('on', i === idx));
+  };
+
+  const range = h('input', {
+    class: 'effort-range', type: 'range', min: '0', max: String(EFFORT_LEVELS.length - 1), step: '1',
+    value: String(idx), 'aria-label': t('reasoningEffort'),
   });
-  showMenu(els.effort, [h('div', { class: 'popover-title', text: t('reasoningEffort') }), ...items], 'up');
+  range.addEventListener('input', () => { idx = Number(range.value) || 0; paint(); });
+  range.addEventListener('change', () => {
+    idx = Number(range.value) || 0;
+    paint();
+    setEffective('effort', EFFORT_LEVELS[idx]);
+  });
+
+  const closeBtn = h('button', { class: 'icon-btn sm', type: 'button', title: '关闭', 'aria-label': '关闭' }, [iconEl('i-x')]);
+  closeBtn.addEventListener('click', () => closeMenu());
+
+  const panel = h('div', { class: 'effort-panel' }, [
+    h('div', { class: 'effort-head' }, [h('span', { class: 'effort-title', text: t('reasoningEffort') }), closeBtn]),
+    h('div', { class: 'effort-row' }, [bigVal, lvTag]),
+    h('div', { class: 'effort-desc', text: '档位越高，思考越久、费用越高' }),
+    h('div', { class: 'effort-sep' }),
+    h('div', { class: 'effort-foot' }, [h('span', { text: t('reasoningEffort') + ' · ' }), footVal]),
+    h('div', { class: 'effort-track' }, [range, h('div', { class: 'effort-dots' }, dots)]),
+  ]);
+  showMenu(els.effort, [panel], 'up');
 }
+
 
 /* ------------------------------ 数据 ------------------------------ */
 async function updateBalance() {

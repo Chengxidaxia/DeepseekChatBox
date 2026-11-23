@@ -90,6 +90,13 @@ export async function getHoliday(date = new Date(), { timeout = 4000 } = {}) {
   return { off: day === 0 || day === 6, makeup: false, name: '', source: 'fallback', cached: false };
 }
 
+/** 同步读缓存：某天是否节假日/调休（没查过返回 null，不发起请求）。
+ *  用于「按消息发送时间」回算峰谷，不能在这里发网络请求。 */
+export function getHolidayCached(date = new Date()) {
+  const hit = readCache()[dateStr(date)];
+  return hit ? { ...hit, cached: true } : null;
+}
+
 /** 清空缓存（设置页可调用） */
 export function clearHolidayCache() {
   try { localStorage.removeItem(CACHE_KEY); } catch {}

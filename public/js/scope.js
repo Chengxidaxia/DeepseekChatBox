@@ -39,7 +39,8 @@ export function openScopeSettings({ kind = 'conv', id, onChange } = {}) {
     h('button', { class: 'btn primary', type: 'button', text: t('close'), onclick: () => close() }),
   ]);
   modal.append(head, body, foot);
-  overlay = h('div', { class: 'overlay', onclick: (e) => { if (e.target === overlay) close(); } }, [modal]);
+  // 分组/会话设置同样不跟点背景关闭，避免误触丢掉没保存的改动
+  overlay = h('div', { class: 'overlay' }, [modal]);
   document.body.append(overlay);
 
   function close() {

@@ -2,6 +2,8 @@
  * 做法：启动时 GET /api/store 拉全量到内存；之后每次改动就地修改内存对象，
  *       再把变更 PATCH/PUT 回服务端（防抖合并，单机单用户足够）。
  */
+import { getHolidayCached } from './holiday.js';
+
 export const DEFAULT_SETTINGS = {
   baseUrl: 'https://api.deepseek.com',
   model: 'deepseek-flash',
@@ -84,13 +86,32 @@ export function migratePrices(p) {
 /** 北京时间是否处于高峰时段（周一至周五 9-12、14-18；法定节假日按空闲）。
  *  同步版只按周末判断，供设置面板即时显示用。
  */
-export function isPeakNow(now = new Date()) {
+function inPeakWindow(now) {
   // 转成 UTC+8 的「当地」时间分量
+  const bj = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
+  const minutes = bj.getHours() * 60 + bj.getMinutes();
+  return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
+}
+
+export function isPeakNow(now = new Date()) {
   const bj = new Date(now.getTime() + (now.getTimezoneOffset() + 480) * 60000);
   const day = bj.getDay(); // 0 = 周日
   if (day === 0 || day === 6) return false;
-  const minutes = bj.getHours() * 60 + bj.getMinutes();
-  return (minutes >= 540 && minutes < 720) || (minutes >= 840 && minutes < 1080);
+  return inPeakWindow(now);
+}
+
+/** 指定时刻的峰谷（发送时计价用）：时段规则 + 那天已缓存到的节假日/调休。
+ *  没查过那天的节假日就退回周末判断，不发网络请求。
+ */
+export function isPeakAt(ms) {
+  const now = new Date(ms || Date.now());
+  const base = isPeakNow(now);
+  let holiday = null;
+  try { holiday = getHolidayCached(now); } catch { holiday = null; }
+  if (!holiday || holiday.source === 'fallback') return base;
+  if (holiday.makeup) return inPeakWindow(now);   // 调休补班日按工作日算
+  if (holiday.off) return false;                  // 法定节假日按空闲价
+  return base;
 }
 
 /** 异步版：auto 模式下查节假日 API（带缓存），节假日按空闲，调休补班按高峰。
@@ -364,6 +385,10 @@ export async function importConversations(list, mode = 'merge') {
       annotations: Array.isArray(m.annotations) ? m.annotations : [],
       serverToolCalls: Array.isArray(m.serverToolCalls) ? m.serverToolCalls : [],
       usage: m.usage || null,
+      // 费用定档快照（发送时刻算好，之后不随当前时间/改价重算）
+      cost: m.cost && typeof m.cost === 'object' && m.cost.text
+        ? { text: String(m.cost.text), value: Number(m.cost.value) || 0, peak: Boolean(m.cost.peak), at: Number(m.cost.at) || 0 }
+        : null,
       model: m.model || '',
       createdAt: m.createdAt || Date.now(),
     })),

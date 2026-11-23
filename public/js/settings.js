@@ -48,7 +48,8 @@ export function openSettings({ onChange } = {}) {
     h('button', { class: 'icon-btn sm', type: 'button', onclick: () => close() }, [icon('i-x')]),
   ]);
 
-  overlay = h('div', { class: 'overlay settings-overlay', onclick: (e) => { if (e.target === overlay) close(); } }, [modal]);
+  // 设置页不跟「点背景关闭」：里面有正在编辑的表单，误触会白填。只能按 ✕ 或 Esc 退出。
+  overlay = h('div', { class: 'overlay settings-overlay' }, [modal]);
   modal.append(head, dialogMain);
 
   function close() {
