@@ -1,0 +1,24 @@
+# 用户隐私 / 凭据（绝不能进仓库）
+data/
+*.local.json
+
+# 构建产物（可从源码重建；exe 与 zip 走 GitHub Releases 分发）
+.build/
+portable/build/
+portable/dist/
+*.exe
+*.zip
+
+# 依赖
+node_modules/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.log
+
+# 备份
+backups/
+*.bak

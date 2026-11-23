@@ -1,0 +1,216 @@
+/* ------------------------------------------------------------------
+   设计令牌 —— 取自 chat.deepseek.com 的 main.css（body / body[data-ds-dark-theme]）
+   原变量名保留，值全部为站点实际取值，未做主观调整。
+   ------------------------------------------------------------------ */
+:root {
+  /* 静态色板 */
+  --ds-neutral-bluish-00: #fff;
+  --ds-neutral-bluish-50: #f9fafb;
+  --ds-neutral-bluish-60: #f5f6f7;
+  --ds-neutral-bluish-75: #f1f3f5;
+  --ds-neutral-bluish-100: #ebeef2;
+  --ds-neutral-bluish-150: #e9ecf2;
+  --ds-neutral-bluish-200: #e1e5ee;
+  --ds-neutral-bluish-300: #cfd3d6;
+  --ds-neutral-bluish-400: #adb2b8;
+  --ds-neutral-bluish-500: #979da6;
+  --ds-neutral-bluish-600: #81858c;
+  --ds-neutral-bluish-700: #61666b;
+  --ds-neutral-bluish-750: #43454a;
+  --ds-neutral-bluish-800: #353638;
+  --ds-neutral-bluish-850: #2c2c2e;
+  --ds-neutral-bluish-875: #232324;
+  --ds-neutral-bluish-900: #1b1b1c;
+  --ds-neutral-bluish-950: #151517;
+  --ds-neutral-bluish-1000: #0f1115;
+
+  --ds-deepseek-50: #edf3fe;
+  --ds-deepseek-100: #e4edfd;
+  --ds-deepseek-200: #d3e2ff;
+  --ds-deepseek-300: #b7c8fe;
+  --ds-deepseek-400: #679efe;
+  --ds-deepseek-450: #5686fe;
+  --ds-deepseek-500: #3964fe;
+  --ds-deepseek-600: #4868b2;
+  --ds-deepseek-800: #34415b;
+  --ds-deepseek-900: #283142;
+
+  --ds-red-50: #fef2f2;
+  --ds-red-100: #fee2e2;
+  --ds-red-400: #f25a5a;
+  --ds-red-500: #ef4444;
+  --ds-red-600: #ec1313;
+  --ds-green-100: #e6faed;
+  --ds-green-400: #4ed17e;
+  --ds-green-500: #22c55e;
+  --ds-amber-100: #fef5e7;
+  --ds-amber-400: #f7ad31;
+  --ds-amber-500: #f59e0b;
+  --ds-amber-600: #dd8629;
+
+  /* 字体：与原站点一致的系统中文栈 */
+  --ds-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
+  --ds-font-family-code: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
+    "Liberation Mono", Menlo, monospace;
+
+  --ds-transition: .18s ease-in-out;
+  --sider-width: 261px;
+  --message-list-max-width: 840px;
+  --message-list-padding-horizontal: 44px;
+}
+
+/* 亮色（默认）—— 对应 body 的 --dsw-alias-* */
+body,
+body[data-theme='light'] {
+  color-scheme: light;
+  --bg-base: var(--ds-neutral-bluish-00);
+  --bg-layer-1: var(--ds-neutral-bluish-00);
+  --bg-layer-2: var(--ds-neutral-bluish-00);
+  --bg-layer-3: var(--ds-neutral-bluish-00);
+  --bg-mask-1: rgba(0, 0, 0, .24);
+  --bg-mask-2: rgba(0, 0, 0, .12);
+  --bg-overlay: var(--ds-neutral-bluish-150);
+  --bg-skeleton: rgba(0, 0, 0, .04);
+  --bg-platform: var(--ds-neutral-bluish-60);
+  --bg-hover: rgba(38, 49, 72, .06);
+  --bg-active: rgba(38, 49, 72, .1);
+  --bg-hover-accent: rgba(38, 49, 72, .14);
+  --bg-hover-solid: var(--ds-neutral-bluish-75);
+  --bg-hover-danger: rgba(236, 19, 19, .05);
+
+  --border-l1: rgba(0, 0, 0, .04);
+  --border-l2-thin: rgba(0, 0, 0, .1);
+  --border-l2: rgba(0, 0, 0, .1);
+  --border-l3: rgba(0, 0, 0, .12);
+  --border-l4: rgba(0, 0, 0, .16);
+
+  --brand-primary: var(--ds-deepseek-500);
+  --brand-text: var(--ds-deepseek-500);
+  --brand-invert: var(--ds-deepseek-500);
+
+  --btn-primary-fill: var(--brand-primary);
+  --btn-primary-hover: var(--ds-deepseek-450);
+  --btn-primary-dimmed: var(--ds-deepseek-400);
+  --btn-contrast-fill: var(--ds-neutral-bluish-700);
+  --btn-elevated-fill: var(--ds-neutral-bluish-00);
+  --btn-floating-fill: var(--ds-neutral-bluish-00);
+  --btn-floating-hover: var(--ds-neutral-bluish-75);
+  --btn-ghost-active-fill: var(--ds-deepseek-50);
+  --btn-ghost-active-border: var(--ds-deepseek-300);
+  --btn-ghost-active-hover: var(--ds-deepseek-100);
+
+  --label-primary: var(--ds-neutral-bluish-1000);
+  --label-primary-dimmed: var(--ds-neutral-bluish-950);
+  --label-primary-inverted: var(--ds-neutral-bluish-00);
+  --label-secondary: var(--ds-neutral-bluish-700);
+  --label-tertiary: var(--ds-neutral-bluish-600);
+  --label-caption: var(--ds-neutral-bluish-400);
+  --label-dimmed: var(--ds-neutral-bluish-200);
+
+  --state-error: var(--ds-red-600);
+  --state-error-2: var(--ds-red-400);
+  --state-success: var(--ds-green-500);
+  --state-warn: var(--ds-amber-500);
+  --state-warn-label: var(--ds-amber-600);
+
+  --markdown-code-block: var(--ds-neutral-bluish-50);
+  --markdown-code-banner: var(--ds-neutral-bluish-50);
+  --markdown-inline-code: var(--ds-neutral-bluish-100);
+  --markdown-citation: var(--ds-neutral-bluish-100);
+  --markdown-tag: var(--ds-neutral-bluish-75);
+
+  --scrollbar-bg: var(--ds-neutral-bluish-200);
+  --scrollbar-hover: var(--ds-neutral-bluish-300);
+
+  --bubble: var(--ds-deepseek-50);
+  --bubble-highlight: var(--ds-deepseek-200);
+  --input-major: var(--ds-neutral-bluish-00);
+  --sidebar-fill: var(--ds-neutral-bluish-50);
+  --sidebar-nav-hover: var(--ds-neutral-bluish-75);
+  --sidebar-nav-active: var(--ds-neutral-bluish-100);
+  --sidebar-nav-active-accent: var(--ds-deepseek-100);
+  --selector-bg: var(--ds-neutral-bluish-75);
+  --tip-bg: var(--ds-neutral-bluish-60);
+  --toast-bg: var(--ds-neutral-bluish-800);
+  --tooltip-bg: var(--ds-neutral-bluish-850);
+  --menu-bg: var(--ds-neutral-bluish-00);
+  --shadow-menu: 0 10px 30px rgba(0, 0, 0, .1), 0 2px 8px rgba(0, 0, 0, .06);
+}
+
+/* 暗色 —— 对应 body[data-ds-dark-theme] */
+body[data-theme='dark'] {
+  color-scheme: dark;
+  --bg-base: var(--ds-neutral-bluish-950);
+  --bg-layer-1: var(--ds-neutral-bluish-875);
+  --bg-layer-2: var(--ds-neutral-bluish-850);
+  --bg-layer-3: var(--ds-neutral-bluish-800);
+  --bg-mask-1: rgba(0, 0, 0, .5);
+  --bg-mask-2: rgba(0, 0, 0, .2);
+  --bg-overlay: var(--ds-neutral-bluish-750);
+  --bg-skeleton: rgba(255, 255, 255, .08);
+  --bg-platform: var(--ds-neutral-bluish-800);
+  --bg-hover: rgba(255, 255, 255, .08);
+  --bg-active: rgba(255, 255, 255, .14);
+  --bg-hover-accent: rgba(255, 255, 255, .24);
+  --bg-hover-solid: var(--ds-neutral-bluish-800);
+  --bg-hover-danger: rgba(242, 90, 90, .15);
+
+  --border-l1: rgba(255, 255, 255, .06);
+  --border-l2-thin: rgba(255, 255, 255, .06);
+  --border-l2: rgba(255, 255, 255, .12);
+  --border-l3: rgba(255, 255, 255, .16);
+  --border-l4: rgba(255, 255, 255, .2);
+
+  --brand-primary: var(--ds-deepseek-450);
+  --brand-text: var(--ds-deepseek-400);
+  --brand-invert: var(--ds-neutral-bluish-00);
+
+  --btn-primary-fill: var(--brand-primary);
+  --btn-primary-hover: var(--ds-deepseek-500);
+  --btn-primary-dimmed: var(--ds-neutral-bluish-750);
+  --btn-contrast-fill: var(--ds-neutral-bluish-50);
+  --btn-elevated-fill: var(--ds-neutral-bluish-750);
+  --btn-floating-fill: var(--ds-neutral-bluish-850);
+  --btn-floating-hover: var(--ds-neutral-bluish-800);
+  --btn-ghost-active-fill: var(--ds-deepseek-900);
+  --btn-ghost-active-border: var(--ds-deepseek-600);
+  --btn-ghost-active-hover: var(--ds-deepseek-800);
+
+  --label-primary: var(--ds-neutral-bluish-50);
+  --label-primary-dimmed: var(--ds-neutral-bluish-100);
+  --label-primary-inverted: var(--ds-neutral-bluish-800);
+  --label-secondary: var(--ds-neutral-bluish-300);
+  --label-tertiary: var(--ds-neutral-bluish-400);
+  --label-caption: var(--ds-neutral-bluish-600);
+  --label-dimmed: var(--ds-neutral-bluish-750);
+
+  --state-error: var(--ds-red-400);
+  --state-error-2: var(--ds-red-400);
+  --state-success: var(--ds-green-500);
+  --state-warn: var(--ds-amber-500);
+  --state-warn-label: var(--ds-amber-600);
+
+  --markdown-code-block: var(--ds-neutral-bluish-900);
+  --markdown-code-banner: var(--ds-neutral-bluish-850);
+  --markdown-inline-code: var(--ds-neutral-bluish-850);
+  --markdown-citation: var(--ds-neutral-bluish-800);
+  --markdown-tag: var(--ds-neutral-bluish-850);
+
+  --scrollbar-bg: var(--ds-neutral-bluish-900);
+  --scrollbar-hover: var(--ds-neutral-bluish-800);
+
+  --bubble: var(--ds-neutral-bluish-850);
+  --bubble-highlight: var(--ds-neutral-bluish-750);
+  --input-major: var(--ds-neutral-bluish-850);
+  --sidebar-fill: var(--ds-neutral-bluish-900);
+  --sidebar-nav-hover: var(--ds-neutral-bluish-850);
+  --sidebar-nav-active: var(--ds-neutral-bluish-750);
+  --sidebar-nav-active-accent: var(--ds-neutral-bluish-800);
+  --selector-bg: var(--ds-neutral-bluish-750);
+  --tip-bg: var(--ds-neutral-bluish-800);
+  --toast-bg: var(--ds-neutral-bluish-750);
+  --tooltip-bg: var(--ds-neutral-bluish-750);
+  --menu-bg: var(--ds-neutral-bluish-800);
+  --shadow-menu: 0 10px 30px rgba(0, 0, 0, .5), 0 2px 8px rgba(0, 0, 0, .3);
+}

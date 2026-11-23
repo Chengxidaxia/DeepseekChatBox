@@ -1,0 +1,202 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>DeepSeek Chatbox</title>
+<meta name="description" content="基于 DeepSeek API 的本地全功能对话客户端：思考模式、联网搜索、文件解析、语音与 Markdown 渲染。">
+<link rel="icon" href="assets/logo-whale.svg" type="image/svg+xml">
+<link rel="stylesheet" href="vendor/katex/katex.min.css">
+<link rel="stylesheet" href="vendor/hljs-light.css" id="hljs-light">
+<link rel="stylesheet" href="vendor/hljs-dark.css" id="hljs-dark" disabled>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body data-theme="light">
+
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.2v9.6M3.2 8h9.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7.2" cy="7.2" r="4.2" stroke="currentColor" stroke-width="1.5" fill="none"/><path d="M10.4 10.4 13.6 13.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-sidebar" viewBox="0 0 16 16"><rect x="2" y="2.6" width="12" height="10.8" rx="2.4" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M6.4 2.8v10.4" stroke="currentColor" stroke-width="1.4"/></symbol>
+    <symbol id="i-settings" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.1" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 1.9v1.6M8 12.5v1.6M2.6 8h1.6M11.8 8h1.6M4.2 4.2l1.1 1.1M10.7 10.7l1.1 1.1M11.8 4.2l-1.1 1.1M5.3 10.7l-1.1 1.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-trash" viewBox="0 0 16 16"><path d="M3.2 4.4h9.6M6.2 4.2V3a.9.9 0 0 1 .9-.9h1.8a.9.9 0 0 1 .9.9v1.2M4.4 4.6l.5 8.1a1 1 0 0 0 1 .9h4.2a1 1 0 0 0 1-.9l.5-8.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" fill="none"/></symbol>
+    <symbol id="i-edit" viewBox="0 0 16 16"><path d="M9.6 3.1 12.9 6.4 5.8 13.5H2.5v-3.3z" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/><path d="M11 1.7 14.3 5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-pin" viewBox="0 0 16 16"><path d="M6 2.2h4l-.6 3.1 2 2.1v1.3H8.9V14L8 12.3 7.1 14V8.7H4.6V7.4l2-2.1z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5.6" y="5.6" width="8" height="8" rx="1.8" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M10.4 5.4V4.2a1.8 1.8 0 0 0-1.8-1.8H4.2a1.8 1.8 0 0 0-1.8 1.8v4.4a1.8 1.8 0 0 0 1.8 1.8h1.2" stroke="currentColor" stroke-width="1.4" fill="none"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13.2 7.4a5.2 5.2 0 1 0-1.4 3.8" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/><path d="M13.4 2.6v3.6H9.8" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-speaker" viewBox="0 0 16 16"><path d="M3 6.2h2.2L8.4 3.6v8.8L5.2 9.8H3z" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/><path d="M10.6 5.6a3.4 3.4 0 0 1 0 4.8M12.4 4a5.6 5.6 0 0 1 0 8" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.6" fill="currentColor"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 16 16"><path d="M8 12.6V3.6M4.2 7.4 8 3.6l3.8 3.8" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-paperclip" viewBox="0 0 16 16"><path d="M10.9 5.6 6.5 10a1.9 1.9 0 1 1-2.7-2.7l4.9-4.9a3 3 0 1 1 4.2 4.2l-5.2 5.2a4.1 4.1 0 1 1-5.8-5.8l4.4-4.4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-globe" viewBox="0 0 16 16">
+      <path d="M7.9996 14.8492C9.5983 14.8492 10.8941 11.7828 10.8941 8 10.8941 4.2172 9.5983 1.1509 7.9996 1.1509" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M7.9996 14.8492C6.4009 14.8492 5.105 11.7828 5.105 8 5.105 4.2172 6.4009 1.1509 7.9996 1.1509" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M7.9996 1.1509C11.7824 1.1509 14.8487 4.2172 14.8487 8 14.8487 11.7828 11.7824 14.8492 7.9996 14.8492 4.2168 14.8492 1.1504 11.7828 1.1504 8 1.1504 4.2172 4.2168 1.1509 7.9996 1.1509z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M1.64 8h12.72" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-think" viewBox="0 0 16 16">
+      <circle cx="8" cy="8" r="1.23" fill="currentColor"/>
+      <path d="M10.5066 10.5066C7.3016 13.7116 3.5821 15.1861 2.198 13.802 0.8139 12.4179 2.2894 8.6984 5.4944 5.4934 8.6994 2.2884 12.4179 0.8139 13.802 2.198 15.1861 3.5821 13.7116 7.3016 10.5066 10.5066z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M10.731 5.269C13.936 8.474 15.31 12.294 13.802 13.802 12.294 15.31 8.475 13.936 5.27 10.731 2.065 7.526 0.69 3.706 2.198 2.198 3.706 0.69 7.526 2.064 10.731 5.269z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 16 16"><path d="M4.2 4.2l7.6 7.6M11.8 4.2l-7.6 7.6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-check" viewBox="0 0 16 16"><path d="M3.4 8.6l3 3 6.2-6.6" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-chevron" viewBox="0 0 16 16"><path d="M4.4 6.4 8 10l3.6-3.6" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-download" viewBox="0 0 16 16"><path d="M8 2.6v7.2M5 7.2 8 10.2l3-3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 11.4v1.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-1.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 16 16"><path d="M8 10.2V3M5 6 8 3l3 3" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/><path d="M2.8 11.4v1.2a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-1.2" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-mic" viewBox="0 0 16 16"><rect x="6.1" y="1.8" width="3.8" height="7.2" rx="1.9" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M3.8 7.6a4.2 4.2 0 0 0 8.4 0M8 11.8v2.4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></symbol>
+    <symbol id="i-more" viewBox="0 0 16 16"><circle cx="3.4" cy="8" r="1.2" fill="currentColor"/><circle cx="8" cy="8" r="1.2" fill="currentColor"/><circle cx="12.6" cy="8" r="1.2" fill="currentColor"/></symbol>
+    <symbol id="i-image" viewBox="0 0 16 16"><rect x="2.4" y="2.8" width="11.2" height="10.4" rx="2" stroke="currentColor" stroke-width="1.4" fill="none"/><circle cx="6" cy="6.2" r="1.3" fill="currentColor"/><path d="M3.2 11.6 6.6 8.2l2.2 2.2 1.8-1.6 2.2 2.6" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-file" viewBox="0 0 16 16"><path d="M9 1.9H5a1.8 1.8 0 0 0-1.8 1.8v8.6A1.8 1.8 0 0 0 5 14.1h6a1.8 1.8 0 0 0 1.8-1.8V5.7z" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/><path d="M9 1.9v3.8h3.8" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="i-refresh" viewBox="0 0 16 16"><path d="M13.2 8a5.2 5.2 0 1 1-1.52-3.68" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round"/><path d="M13.4 2.6v3.3H10.1" stroke="currentColor" stroke-width="1.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+    <symbol id="i-warning" viewBox="0 0 16 16"><path d="M8 2.6 14 13H2z" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/><path d="M8 6.2v3.2M8 11.4v.1" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+    <symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="3" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M8 1.6v1.5M8 12.9v1.5M1.6 8h1.5M12.9 8h1.5M3.5 3.5l1.1 1.1M11.4 11.4l1.1 1.1M12.5 3.5l-1.1 1.1M4.6 11.4l-1.1 1.1" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></symbol>
+    <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13.2 9.8A5.6 5.6 0 0 1 6.2 2.8a5.6 5.6 0 1 0 7 7z" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 16 16"><path d="M2 4.4c0-.9.7-1.6 1.6-1.6h2.6l1.5 1.7h4.7c.9 0 1.6.7 1.6 1.6v5.5c0 .9-.7 1.6-1.6 1.6H3.6c-.9 0-1.6-.7-1.6-1.6z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="i-wrench" viewBox="0 0 16 16"><path d="M9.7 2.2a3.6 3.6 0 0 0-3.4 4.7L2.2 11a1.7 1.7 0 0 0 2.4 2.4l4.1-4.1a3.6 3.6 0 0 0 4.7-3.4c0-.6-.2-1.2-.4-1.7l-2 2-1.9-.5-.5-1.9 2-2a3.6 3.6 0 0 0-.9-.1z" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linejoin="round"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 16 16"><circle cx="4.4" cy="3.4" r="1.6" stroke="currentColor" stroke-width="1.3" fill="none"/><circle cx="4.4" cy="12.6" r="1.6" stroke="currentColor" stroke-width="1.3" fill="none"/><circle cx="11.6" cy="6.2" r="1.6" stroke="currentColor" stroke-width="1.3" fill="none"/><path d="M4.4 5v6M4.4 9.2c0-2 1.2-3 3.6-3h2" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/></symbol>
+  </defs>
+</svg>
+
+<div class="app" id="app">
+  <div class="scrim" id="scrim"></div>
+
+  <!-- 侧栏 -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-head">
+      <a class="brand" href="#" id="brand" aria-label="DeepSeek">
+        <svg class="brand-svg" aria-label="DeepSeek" viewBox="0 0 143 23" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M78.6785 18.6823H77.1078V16.2472H78.6785C79.6513 16.2472 80.6342 16.0047 81.2672 15.3308C81.9009 14.6569 82.14 13.6232 82.14 12.59C82.14 11.5569 81.9109 10.5231 81.2672 9.84981C80.6247 9.17594 79.6513 8.93343 78.6785 8.93343C77.7056 8.93343 76.7228 9.17594 76.0886 9.84981C75.4549 10.5237 75.2158 11.5569 75.2158 12.59V22.5909H72.4605V6.50781H75.2158V7.53204H75.7209C75.7757 7.4689 75.8304 7.41525 75.8857 7.36161C76.5752 6.73244 77.6308 6.50781 78.6684 6.50781C80.2944 6.50781 81.9193 6.91236 82.9849 8.03549C84.0499 9.15861 84.4265 10.8835 84.4265 12.6001C84.4265 14.3166 84.0404 16.0326 82.9849 17.1647C81.9288 18.2967 80.2944 18.6834 78.6785 18.6834V18.6823Z" fill="currentColor"></path><path d="M36.7486 6.94097H38.3188V9.37609H36.7486C35.7753 9.37609 34.7929 9.61859 34.1593 10.2925C33.5257 10.9663 33.2871 12.0001 33.2871 13.0332C33.2871 14.0664 33.5167 15.0996 34.1593 15.7734C34.8019 16.4473 35.7753 16.6898 36.7486 16.6898C37.722 16.6898 38.7049 16.4473 39.3385 15.7734C39.9722 15.0996 40.2108 14.0664 40.2108 13.0332V3.02344H42.9655V19.116H40.2108V18.0918H39.7057C39.6503 18.1544 39.5956 18.2086 39.5403 18.2622C38.8513 18.8908 37.7952 19.116 36.7576 19.116C35.1321 19.116 33.5067 18.712 32.4416 17.5889C31.3766 16.4658 31 14.7403 31 13.0243C31 11.3083 31.3856 9.59177 32.4416 8.45971C33.5067 7.33658 35.1321 6.94097 36.7486 6.94097Z" fill="currentColor"></path><path d="M56.7855 12.8155V13.795H49.4483V11.8454H54.3152C54.2051 11.1358 53.9481 10.4709 53.4887 9.9853C52.8277 9.2846 51.808 9.03316 50.7983 9.03316C49.7886 9.03316 48.7688 9.2846 48.1078 9.9853C47.4468 10.686 47.2076 11.7555 47.2076 12.816C47.2076 13.8766 47.4462 14.9544 48.1078 15.6462C48.7688 16.338 49.788 16.5989 50.7983 16.5989C51.8085 16.5989 52.8277 16.3475 53.4887 15.6462C53.5804 15.5473 53.6631 15.4395 53.7458 15.3316H56.4642C56.2256 16.1765 55.849 16.9403 55.2796 17.5332C54.1777 18.692 52.479 19.1145 50.7983 19.1145C49.1175 19.1145 47.4188 18.701 46.3169 17.5332C45.215 16.3653 44.8111 14.5862 44.8111 12.816C44.8111 11.0458 45.2061 9.25778 46.3169 8.0989C47.4283 6.94001 49.1175 6.51758 50.7983 6.51758C52.479 6.51758 54.1777 6.93107 55.2796 8.0989C56.3904 9.26672 56.7855 11.0458 56.7855 12.816V12.8155Z" fill="currentColor"></path><path d="M70.6151 12.8155V13.795H63.2779V11.8454H68.1448C68.0341 11.1358 67.7776 10.4709 67.3183 9.9853C66.6573 9.2846 65.6376 9.03316 64.6279 9.03316C63.6182 9.03316 62.5984 9.2846 61.9374 9.9853C61.2764 10.686 61.0372 11.7555 61.0372 12.816C61.0372 13.8766 61.2758 14.9544 61.9374 15.6462C62.5984 16.338 63.6182 16.5989 64.6279 16.5989C65.6376 16.5989 66.6573 16.3475 67.3183 15.6462C67.4105 15.5473 67.4927 15.4395 67.5748 15.3316H70.2938C70.0546 16.1765 69.678 16.9403 69.1086 17.5332C68.0067 18.692 66.3081 19.1145 64.6279 19.1145C62.9476 19.1145 61.2484 18.701 60.1465 17.5332C59.0446 16.3653 58.6406 14.5862 58.6406 12.816C58.6406 11.0458 59.0357 9.25778 60.1465 8.0989C61.2579 6.94001 62.9471 6.51758 64.6279 6.51758C66.3086 6.51758 68.0067 6.93107 69.1086 8.0989C70.22 9.26672 70.6151 11.0458 70.6151 12.816V12.8155Z" fill="currentColor"></path><path d="M92.2781 19.1156C93.9589 19.1156 95.657 18.8731 96.7589 18.1813C97.8608 17.4896 98.2653 16.438 98.2653 15.3959C98.2653 14.3538 97.8697 13.2932 96.7589 12.6104C95.657 11.9276 93.9583 11.6756 92.2781 11.6756C91.5612 11.6756 90.9002 11.5767 90.4319 11.3163C89.9637 11.0464 89.7893 10.6424 89.7893 10.2379C89.7893 9.83332 89.9547 9.42039 90.4319 9.15944C90.9002 8.88955 91.626 8.80015 92.3418 8.80015C93.0576 8.80015 93.7834 8.89905 94.2528 9.15944C94.721 9.42933 94.8954 9.83332 94.8954 10.2379H97.6959C97.6959 9.1952 97.3383 8.13522 96.3376 7.4524C95.3368 6.76958 93.803 6.51758 92.2787 6.51758C90.7543 6.51758 89.2211 6.76008 88.2198 7.4524C87.219 8.14416 86.8603 9.1952 86.8603 10.2379C86.8603 11.2805 87.2185 12.3405 88.2198 13.0233C89.2205 13.7061 90.7538 13.9582 92.2787 13.9582C93.0682 13.9582 93.941 14.0571 94.464 14.3174C94.9881 14.5784 95.1714 14.9913 95.1714 15.3959C95.1714 15.8004 94.9881 16.2133 94.464 16.4743C93.941 16.7347 93.142 16.8336 92.3524 16.8336C91.5629 16.8336 90.7543 16.7347 90.2397 16.4743C89.7256 16.2139 89.5323 15.8004 89.5323 15.3959H86.2998C86.2998 16.4385 86.6943 17.4985 87.8063 18.1813C88.9171 18.8641 90.5979 19.1156 92.2787 19.1156H92.2781Z" fill="currentColor"></path><path d="M112.094 12.8155V13.795H104.757V11.8454H109.624C109.514 11.1358 109.257 10.4709 108.798 9.9853C108.136 9.2846 107.117 9.03316 106.106 9.03316C105.095 9.03316 104.077 9.2846 103.416 9.9853C102.755 10.686 102.517 11.7555 102.517 12.816C102.517 13.8766 102.755 14.9544 103.416 15.6462C104.077 16.338 105.097 16.5989 106.106 16.5989C107.116 16.5989 108.136 16.3475 108.798 15.6462C108.889 15.5473 108.972 15.4395 109.054 15.3316H111.772C111.533 16.1765 111.157 16.9403 110.588 17.5332C109.486 18.692 107.787 19.1145 106.106 19.1145C104.425 19.1145 102.727 18.701 101.625 17.5332C100.524 16.3653 100.12 14.5862 100.12 12.816C100.12 11.0458 100.515 9.25778 101.625 8.0989C102.737 6.94001 104.427 6.51758 106.106 6.51758C107.786 6.51758 109.486 6.93107 110.588 8.0989C111.699 9.26672 112.093 11.0458 112.093 12.816L112.094 12.8155Z" fill="currentColor"></path><path d="M125.924 12.8155V13.795H118.586V11.8454H123.453C123.344 11.1358 123.086 10.4709 122.627 9.9853C121.966 9.2846 120.947 9.03316 119.936 9.03316C118.926 9.03316 117.907 9.2846 117.246 9.9853C116.585 10.686 116.346 11.7555 116.346 12.816C116.346 13.8766 116.585 14.9544 117.246 15.6462C117.907 16.338 118.927 16.5989 119.936 16.5989C120.946 16.5989 121.966 16.3475 122.627 15.6462C122.719 15.5473 122.801 15.4395 122.885 15.3316H125.602C125.363 16.1765 124.987 16.9403 124.418 17.5332C123.316 18.692 121.617 19.1145 119.936 19.1145C118.256 19.1145 116.558 18.701 115.456 17.5332C114.354 16.3653 113.949 14.5862 113.949 12.816C113.949 11.0458 114.344 9.25778 115.456 8.0989C116.567 6.94001 118.256 6.51758 119.936 6.51758C121.617 6.51758 123.315 6.93107 124.418 8.0989C125.529 9.26672 125.924 11.0458 125.924 12.816V12.8155Z" fill="currentColor"></path><path d="M130.524 3.02344H127.77V19.116H130.524V3.02344Z" fill="currentColor"></path><path d="M135.227 12.4384L139.744 19.1146H136.337L131.819 12.4384L136.337 7.07422H139.744L135.227 12.4384Z" fill="currentColor"></path><g clip-path="url(#clip0_4329_19769)"><path d="M26.5174 3.39471C26.235 3.2567 26.1137 3.52006 25.9487 3.65346C25.8923 3.69659 25.8446 3.75294 25.7969 3.80469C25.3846 4.24516 24.9027 4.53439 24.2737 4.49989C23.3536 4.44814 22.5682 4.73737 21.8735 5.44119C21.7258 4.57349 21.2353 4.0554 20.4889 3.72304C20.0985 3.55054 19.7034 3.37746 19.4297 3.00197C19.2388 2.73459 19.1865 2.43673 19.091 2.14289C19.0301 1.96579 18.9697 1.78466 18.7656 1.75418C18.5442 1.71968 18.4574 1.90541 18.3705 2.06067C18.0232 2.69549 17.8887 3.39471 17.9019 4.10313C17.9324 5.6965 18.6051 6.96556 19.9421 7.86834C20.0939 7.97184 20.133 8.07535 20.0852 8.22658C19.9938 8.53766 19.8857 8.83955 19.7903 9.15063C19.7293 9.34901 19.6385 9.39271 19.4257 9.30588C18.692 8.9994 18.0583 8.54571 17.4982 7.99772C16.5477 7.07827 15.6881 6.06336 14.6162 5.26869C14.3644 5.08296 14.1125 4.91045 13.8521 4.746C12.7584 3.68394 13.9952 2.81164 14.2816 2.70814C14.5812 2.60003 14.3857 2.22857 13.4179 2.23317C12.4502 2.2372 11.5646 2.56151 10.4359 2.99335C10.2708 3.05832 10.0972 3.10547 9.91951 3.14457C8.8954 2.95022 7.83162 2.90709 6.72069 3.03245C4.62877 3.26533 2.95777 4.25436 1.72954 5.94261C0.254043 7.97184 -0.0932679 10.2777 0.33167 12.6824C0.778458 15.2171 2.07225 17.3153 4.06008 18.9558C6.12152 20.6567 8.49577 21.4905 11.2047 21.3306C12.8498 21.2358 14.6812 21.0155 16.7473 19.2669C17.2682 19.5262 17.8151 19.6297 18.7219 19.7074C19.4205 19.7724 20.0933 19.6729 20.6143 19.5648C21.4302 19.3923 21.3739 18.6367 21.0789 18.4981C18.6874 17.3843 19.2124 17.8374 18.7351 17.4706C19.9501 16.033 21.8063 13.4776 22.379 9.99821C22.4353 9.61409 22.5072 9.073 22.4986 8.76192C22.494 8.57216 22.5377 8.49856 22.7545 8.47671C23.3536 8.40771 23.935 8.24383 24.4692 7.94999C26.0188 7.10357 26.6439 5.71318 26.7911 4.04678C26.8129 3.79204 26.7865 3.52869 26.5174 3.39471ZM13.0143 18.3946C10.6964 16.5724 9.5722 15.9726 9.10816 15.9985C8.67402 16.0244 8.75222 16.5212 8.84768 16.8449C8.94773 17.1646 9.07768 17.3849 9.25996 17.6655C9.38589 17.8512 9.47272 18.1272 9.13404 18.3348C8.38766 18.7965 7.08985 18.1796 7.0289 18.1491C5.51833 17.2595 4.25559 16.0853 3.36546 14.4793C2.50581 12.9337 2.0067 11.2753 1.92447 9.50542C1.90262 9.07818 2.02855 8.92695 2.45406 8.84932C3.01413 8.74582 3.59144 8.72397 4.15093 8.80619C6.51656 9.15178 8.53027 10.2092 10.2185 11.8848C11.1822 12.8388 11.9114 13.979 12.6623 15.0929C13.461 16.2757 14.3201 17.4027 15.4144 18.3268C15.8008 18.6505 16.109 18.8966 16.404 19.0783C15.5144 19.1778 14.0297 19.1991 13.0143 18.3958V18.3946ZM14.1252 11.2489C14.1252 11.0591 14.277 10.9079 14.4679 10.9079C14.511 10.9079 14.5501 10.9165 14.5852 10.9292C14.6329 10.9464 14.6766 10.9723 14.7111 11.0114C14.7721 11.0718 14.8066 11.158 14.8066 11.2489C14.8066 11.4386 14.6548 11.5899 14.4639 11.5899C14.273 11.5899 14.1252 11.4386 14.1252 11.2489ZM17.5759 13.0188C17.3545 13.1096 17.1331 13.1873 16.9203 13.1959C16.5903 13.2131 16.2303 13.0791 16.0348 12.9153C15.7312 12.6605 15.5139 12.5179 15.423 12.0734C15.3839 11.8837 15.4057 11.5899 15.4402 11.4214C15.5185 11.0585 15.4316 10.8257 15.1757 10.614C14.9676 10.4415 14.7025 10.3938 14.4115 10.3938C14.3029 10.3938 14.2034 10.3461 14.1292 10.3076C14.0079 10.2472 13.9078 10.096 14.0033 9.91023C14.0338 9.84985 14.1815 9.70322 14.216 9.67734C14.6111 9.45251 15.0665 9.52612 15.488 9.6946C15.8784 9.85445 16.174 10.1477 16.5989 10.5623C17.033 11.0631 17.1112 11.2011 17.3585 11.5772C17.554 11.871 17.7317 12.1729 17.8536 12.5185C17.9272 12.7341 17.8317 12.9107 17.5759 13.0188Z" fill="currentColor"></path></g><defs><clippath id="clip0_4329_19769"><rect width="26.634" height="19.6" fill="white" transform="translate(0.163086 1.75)"></rect></clippath></defs></svg>
+      </a>
+      <div class="sidebar-actions">
+        <button class="icon-btn" id="btnSearchChats" title="搜索对话" aria-label="搜索对话">
+          <svg class="icon"><use href="#i-search"/></svg>
+        </button>
+        <button class="icon-btn" id="btnNewChatTop" title="开启新对话" aria-label="开启新对话">
+          <svg class="icon"><use href="#i-plus"/></svg>
+        </button>
+      </div>
+    </div>
+
+    <button class="new-chat" id="btnNewChat">
+      <svg class="icon"><use href="#i-plus"/></svg>
+      <span data-i18n="newChat">开启新对话</span>
+    </button>
+
+    <div class="sidebar-search hidden" id="searchWrap">
+      <svg class="icon"><use href="#i-search"/></svg>
+      <input id="chatSearchInput" type="text" placeholder="搜索对话" data-i18n-placeholder="searchPlaceholder" autocomplete="off">
+    </div>
+
+    <div class="chat-scroll" id="chatList"></div>
+
+    <div class="sidebar-foot">
+      <button class="foot-row" id="btnNewGroup" title="新建分组">
+        <svg class="icon"><use href="#i-folder"/></svg>
+        <span class="label">新建分组</span>
+      </button>
+      <button class="foot-row" id="btnBalance" title="查询余额">
+        <svg class="icon"><use href="#i-file"/></svg>
+        <span class="label" data-i18n="balance">余额</span>
+        <span class="hint" id="balanceHint">—</span>
+      </button>
+      <button class="foot-row" id="btnExportAll" title="导出全部对话">
+        <svg class="icon"><use href="#i-download"/></svg>
+        <span class="label" data-i18n="exportAll">导出对话</span>
+      </button>
+      <button class="foot-row" id="btnSettings">
+        <svg class="icon"><use href="#i-settings"/></svg>
+        <span class="label" data-i18n="settings">设置</span>
+        <span class="hint" id="keyHint"></span>
+      </button>
+    </div>
+  </aside>
+
+  <!-- 主区 -->
+  <main class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="btnMenu" title="侧栏" aria-label="侧栏">
+        <svg class="icon"><use href="#i-sidebar"/></svg>
+      </button>
+      <button class="model-select" id="btnModel" title="切换模型">
+        <span class="name" id="modelName">DeepSeek-V4.1-Flash</span>
+        <svg class="icon chev"><use href="#i-chevron"/></svg>
+      </button>
+      <span class="topbar-badge hidden" id="mockBadge">演示模式</span>
+      <span class="topbar-badge hidden" id="streamBadge">生成中…</span>
+      <div class="spacer"></div>
+      <button class="icon-btn" id="btnConvSettings" title="会话设置">
+        <svg class="icon"><use href="#i-settings"/></svg>
+      </button>
+      <button class="icon-btn" id="btnTheme" title="切换主题">
+        <svg class="icon"><use href="#i-moon"/></svg>
+      </button>
+      <button class="icon-btn" id="btnNewChatTop2" title="开启新对话">
+        <svg class="icon"><use href="#i-plus"/></svg>
+      </button>
+    </header>
+
+    <div class="chat-view" id="chatView">
+      <div class="view-inner" id="viewInner"></div>
+    </div>
+
+    <div class="composer-wrap">
+      <div class="composer" id="composer">
+        <div class="input-shell" id="inputShell">
+          <div class="attach-tray hidden" id="attachTray"></div>
+          <div class="input-main">
+            <!-- 官方同款 mirror：隐藏的等宽文本撑高度，textarea 绝对定位铺满，避免 autoGrow 抖动 -->
+            <div class="prompt-mirror" id="promptMirror" aria-hidden="true"></div>
+            <div class="spectrum hidden" id="spectrum" aria-hidden="true"></div>
+            <textarea id="prompt" rows="1" placeholder="给 DeepSeek 发送消息" data-i18n-placeholder="placeholder" autocomplete="off"
+                      spellcheck="false" aria-label="输入消息"></textarea>
+          </div>
+          <div class="input-bar">
+            <div class="left">
+              <button class="toggle" id="btnThink" aria-pressed="false" title="深度思考">
+                <svg class="icon"><use href="#i-think"/></svg>
+                <span data-i18n="deepThink">深度思考</span>
+              </button>
+              <button class="toggle" id="btnSearch" aria-pressed="false" title="智能搜索（联网）">
+                <svg class="icon"><use href="#i-globe"/></svg>
+                <span data-i18n="smartSearch">智能搜索</span>
+              </button>
+              <button class="toggle" id="btnTools" aria-pressed="false" title="本地工具：余额 / 模型 / 时间 / 历史搜索 / 用量">
+                <svg class="icon"><use href="#i-wrench"/></svg>
+                <span data-i18n="localTools">工具</span>
+              </button>
+              <button class="toggle hidden" id="btnEffort" title="思考强度">
+                <span id="effortLabel">high</span>
+                <svg class="icon"><use href="#i-chevron"/></svg>
+              </button>
+            </div>
+            <div class="right">
+              <button class="icon-btn sm" id="btnAttach" title="上传图片或文件">
+                <svg class="icon"><use href="#i-paperclip"/></svg>
+              </button>
+              <button class="icon-btn sm" id="btnMic" title="语音输入">
+                <svg class="icon"><use href="#i-mic"/></svg>
+              </button>
+              <button class="send-btn" id="btnSend" title="发送" disabled>
+                <svg class="icon"><use href="#i-arrow-up"/></svg>
+              </button>
+            </div>
+          </div>
+        </div>
+        <div class="composer-foot" id="composerFoot"></div>
+      </div>
+    </div>
+  </main>
+      <!-- 搜索结果面板（官方同款：右侧独立栏，手机端全屏） -->
+      <aside class="search-panel hidden" id="searchPanel" aria-label="搜索结果"></aside>
+</div>
+
+<input type="file" id="fileInput" multiple hidden>
+
+<script src="vendor/marked.umd.js"></script>
+<script src="vendor/highlight.min.js"></script>
+<script src="vendor/katex/katex.min.js"></script>
+<script src="vendor/mermaid.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
