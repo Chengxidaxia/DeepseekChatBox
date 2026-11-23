@@ -99,7 +99,7 @@ const blobPath = path.join(buildDir, 'sea-prep.blob');
 console.log(`blob: ${(fs.statSync(blobPath).size / 1048576).toFixed(2)} MB`);
 
 // 5) 复制 node.exe
-const exePath = path.join(outDir, 'DeepSeekChatbox.exe');
+const exePath = path.join(outDir, 'DeepSeekChatBox.exe');
 fs.copyFileSync(process.execPath, exePath);
 console.log(`copied runtime -> ${exePath} (${(fs.statSync(exePath).size / 1048576).toFixed(1)} MB)`);
 

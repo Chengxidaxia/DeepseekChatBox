@@ -145,7 +145,7 @@ try {
   console.error('\n[FATAL] Cannot create data directory: ' + DATA_DIR);
   console.error('        ' + e.message);
   console.error('        Move the exe to a writable folder (USB stick / Desktop),');
-  console.error('        or start with:  DeepSeekChatbox.exe --data-dir "D:\\some\\dir"\n');
+  console.error('        or start with:  DeepSeekChatBox.exe --data-dir "D:\\some\\dir"\n');
   process.exit(1);
 }
 

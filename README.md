@@ -25,8 +25,8 @@ node server.mjs
 
 ```
 deepseek-chatbox/data/            # 源码版
-DeepSeekChatbox.exe
-DeepSeekChatbox.exe 同级 data/    # 便携版：跟着 exe 走
+DeepSeekChatBox.exe
+DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 ├─ settings.json        设置 + API Key（明文，仅本机）
 ├─ conversations.json   全部对话（含思考、引用、用量）
 ├─ ui.json              界面状态（侧栏收起等）
@@ -101,7 +101,7 @@ DeepSeekChatbox.exe 同级 data/    # 便携版：跟着 exe 走
 
 ### 便携版（单文件 exe，免 Node）
 
-`portable/dist/DeepSeekChatbox.exe` —— **86.6 MB 单文件**，内嵌 Node 22 运行时 + 全部前端资源，双击即用：
+`portable/dist/DeepSeekChatBox.exe` —— **98.9 MB 单文件**，内嵌 Node 22 运行时 + 全部前端资源，双击即用：
 
 - 不解压、不装 Node、不写注册表、不联网下载；删掉 exe 即彻底卸载
 - 启动后自动挑端口（默认 17321，占用则顺延），已开实例时只打开浏览器不重复起服务
@@ -295,12 +295,12 @@ deepseek-chatbox/
 ├─ data/                   运行时生成：设置 / 对话 / 附件 / 备份
 ├─ package.json
 ├─ 启动.bat                纯 ASCII + CRLF（chcp 65001 让程序中文日志正常显示），双击即用（源码版）
-├─ DeepSeekChatbox-portable.zip   便携版压缩包（33 MB）
+├─ DeepSeekChatBox-portable.zip   便携版压缩包（36.7 MB）
 ├─ portable/
 │  ├─ sea-main.cjs         便携版入口（SEA / 源码双模式，资源从内嵌 blob 读）
 │  ├─ build.mjs            构建脚本：收集 public → blob → 注入 node.exe
 │  └─ dist/
-│     ├─ DeepSeekChatbox.exe      单文件便携版（86.7 MB）
+│     ├─ DeepSeekChatBox.exe      单文件便携版（98.9 MB）
 │     └─ 使用说明.txt             给最终用户的说明（UTF-8 BOM + CRLF）
 ├─ public/
 │  ├─ index.html           结构 + 图标 sprite + 内联 wordmark
