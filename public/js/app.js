@@ -70,6 +70,7 @@ const els = {
   tools: $('#btnTools'),
   effortLabel: $('#effortLabel'),
   modelName: $('#modelName'),
+  topbarTitle: $('#topbarTitle'),
   foot: $('#composerFoot'),
   fileInput: $('#fileInput'),
   mockBadge: $('#mockBadge'),
@@ -330,8 +331,15 @@ function currentConversation() {
   return state.currentId ? getConversation(state.currentId) : null;
 }
 
-function ensureConversation() {
-  if (state.currentId && getConversation(state.currentId)) return getConversation(state.currentId);
+/** 顶栏左端显示当前会话标题（官方 chat 的做法）；欢迎页没有标题就留空 */
+function syncTopbarTitle(conv) {
+  if (!els.topbarTitle) return;
+  const title = (conv && conv.title) || '';
+  els.topbarTitle.textContent = title;
+  els.topbarTitle.title = title;
+}
+
+function ensureConversation() {  if (state.currentId && getConversation(state.currentId)) return getConversation(state.currentId);
   const c = createConversation({ title: '' });
   state.currentId = c.id;
   return c;
@@ -339,6 +347,7 @@ function ensureConversation() {
 
 function renderChat() {
   const conv = currentConversation();
+  syncTopbarTitle(conv);
   els.viewInner.replaceChildren();
   const list = conv ? visibleMessages(conv) : [];
   if (!conv || !list.length) {
@@ -1989,6 +1998,23 @@ function closeSidebarOnMobile() {
   }
 }
 
+/** 侧栏展开/收起：侧栏头的收起按钮与顶栏胶囊的展开按钮共用 */
+function toggleSidebar() {
+  els.app.classList.toggle('sidebar-collapsed');
+  saveUI({ sidebarCollapsed: els.app.classList.contains('sidebar-collapsed') });
+}
+
+/** 搜索：先保证侧栏可见，再展开搜索框并聚焦（收起态直接点顶栏搜索也能用） */
+function toggleSearchPanel() {
+  const willShow = els.searchWrap.classList.contains('hidden');
+  if (willShow && els.app.classList.contains('sidebar-collapsed')) {
+    els.app.classList.remove('sidebar-collapsed');
+    saveUI({ sidebarCollapsed: false });
+  }
+  els.searchWrap.classList.toggle('hidden', !willShow);
+  if (willShow) els.chatSearchInput.focus();
+}
+
 /** 手机地址栏/软键盘会改变视觉视口，用 --app-height 跟随，避免输入框被挡住 */
 function wireViewport() {
   const vv = window.visualViewport;
@@ -2105,12 +2131,9 @@ function wire() {
   $('#btnModel').addEventListener('click', modelMenu);
 
   $('#btnNewChat').addEventListener('click', newChat);
-  $('#btnNewChatTop2').addEventListener('click', newChat);
   $('#btnNewChatTop').addEventListener('click', newChat);
-  $('#btnSearchChats').addEventListener('click', () => {
-    els.searchWrap.classList.toggle('hidden');
-    if (!els.searchWrap.classList.contains('hidden')) els.chatSearchInput.focus();
-  });
+  $('#btnSearchChats').addEventListener('click', toggleSearchPanel);
+  $('#btnSearchChats2').addEventListener('click', toggleSearchPanel);
   els.chatSearchInput.addEventListener('input', debounce(() => {
     state.searchQuery = els.chatSearchInput.value;
     renderSidebar();
@@ -2141,10 +2164,8 @@ function wire() {
     saveSettings({ theme: dark ? 'light' : 'dark' });
     applyTheme();
   });
-  $('#btnMenu').addEventListener('click', () => {
-    els.app.classList.toggle('sidebar-collapsed');
-    saveUI({ sidebarCollapsed: els.app.classList.contains('sidebar-collapsed') });
-  });
+  $('#btnMenu').addEventListener('click', toggleSidebar);
+  $('#btnMenuOpen').addEventListener('click', toggleSidebar);
 
   wireViewport();
   wireSwipe();

@@ -75,8 +75,8 @@
         <button class="icon-btn" id="btnSearchChats" title="搜索对话" aria-label="搜索对话">
           <svg class="icon"><use href="#i-search"/></svg>
         </button>
-        <button class="icon-btn" id="btnNewChatTop" title="开启新对话" aria-label="开启新对话">
-          <svg class="icon"><use href="#i-plus"/></svg>
+        <button class="icon-btn" id="btnMenu" title="收起侧栏" aria-label="收起侧栏">
+          <svg class="icon"><use href="#i-sidebar"/></svg>
         </button>
       </div>
     </div>
@@ -118,24 +118,30 @@
   <!-- 主区 -->
   <main class="main">
     <header class="topbar">
-      <button class="icon-btn menu-btn" id="btnMenu" title="侧栏" aria-label="侧栏">
-        <svg class="icon"><use href="#i-sidebar"/></svg>
-      </button>
+      <div class="topbar-tools" id="topbarTools">
+        <button class="icon-btn" id="btnMenuOpen" title="展开侧栏" aria-label="展开侧栏">
+          <svg class="icon"><use href="#i-sidebar"/></svg>
+        </button>
+        <button class="icon-btn" id="btnSearchChats2" title="搜索对话" aria-label="搜索对话">
+          <svg class="icon"><use href="#i-search"/></svg>
+        </button>
+        <button class="icon-btn" id="btnNewChatTop" title="开启新对话" aria-label="开启新对话">
+          <svg class="icon"><use href="#i-plus"/></svg>
+        </button>
+      </div>
+      <div class="topbar-title" id="topbarTitle"></div>
+      <span class="topbar-badge hidden" id="mockBadge">演示模式</span>
+      <span class="topbar-badge hidden" id="streamBadge">生成中…</span>
+      <div class="spacer"></div>
       <button class="model-select" id="btnModel" title="切换模型">
         <span class="name" id="modelName">DeepSeek-V4.1-Flash</span>
         <svg class="icon chev"><use href="#i-chevron"/></svg>
       </button>
-      <span class="topbar-badge hidden" id="mockBadge">演示模式</span>
-      <span class="topbar-badge hidden" id="streamBadge">生成中…</span>
-      <div class="spacer"></div>
       <button class="icon-btn" id="btnConvSettings" title="会话设置">
         <svg class="icon"><use href="#i-settings"/></svg>
       </button>
       <button class="icon-btn" id="btnTheme" title="切换主题">
         <svg class="icon"><use href="#i-moon"/></svg>
-      </button>
-      <button class="icon-btn" id="btnNewChatTop2" title="开启新对话">
-        <svg class="icon"><use href="#i-plus"/></svg>
       </button>
     </header>
 

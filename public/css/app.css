@@ -270,27 +270,59 @@ body[data-theme='dark'] .new-chat { box-shadow: none; border-color: var(--border
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 16px;
+  padding: 0 20px;
   background: var(--bg-base);
   z-index: 5;
 }
 .topbar .spacer { flex: 1; }
+
+/* 侧栏收起后出现在顶栏左端的胶囊按钮组（官方 chat 同款：展开 / 搜索 / 新建） */
+.topbar-tools {
+  display: none;
+  align-items: center;
+  gap: 2px;
+  height: 32px;
+  padding: 0 4px;
+  flex: none;
+  border: 1px solid var(--border-l1);
+  border-radius: 100px;
+  background: var(--bg-base);
+}
+.app.sidebar-collapsed .topbar-tools { display: inline-flex; }
+.topbar-tools .icon-btn { width: 26px; height: 26px; }
+.topbar-tools .icon-btn .icon { width: 16px; height: 16px; }
+
+/* 顶栏左端的会话标题（官方展开态就是标题，没有多余图标） */
+.topbar-title {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+  color: var(--label-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.topbar-title:empty { display: none; }
+.topbar-title[data-placeholder] { color: var(--label-tertiary); font-weight: 400; }
 
 .model-select {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   height: 34px;
-  padding: 0 10px 0 12px;
+  padding: 0 8px 0 10px;
   border: none;
   border-radius: 100px;
   background: transparent;
-  color: var(--label-primary);
+  color: var(--label-secondary);
   font-size: 14px;
   font-weight: 500;
   max-width: 240px;
+  flex: none;
 }
-.model-select:hover { background: var(--bg-hover); }
+.model-select:hover { background: var(--bg-hover); color: var(--label-primary); }
 .model-select .chev { color: var(--label-caption); }
 .model-select .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
@@ -1765,7 +1797,6 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 .lightbox img { max-width: 100%; max-height: 100%; border-radius: 8px; }
 
 /* 响应式 */
-.menu-btn { display: inline-flex; }
 
 @media (max-width: 1180px) {
   :root { --message-list-max-width: 712px; --message-list-padding-horizontal: 36px; }
@@ -1780,7 +1811,8 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
   }
   .app.sidebar-collapsed .sidebar { margin-left: 0; transform: translateX(-100%); box-shadow: none; }
   .app:not(.sidebar-collapsed) .scrim { opacity: 1; pointer-events: auto; }
-  .menu-btn { display: inline-flex; }
+  /* 抽屉模式下侧栏默认收起，顶栏胶囊里的「展开」就是唯一入口 */
+  .topbar-tools { display: inline-flex; }
   :root { --message-list-padding-horizontal: 20px; }
   .composer-wrap { padding-bottom: 12px; }
   .welcome { padding: 0 20px 40px; }
@@ -1862,7 +1894,11 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
     gap: 4px;
   }
   .topbar .icon-btn { width: 38px; height: 38px; }
-  .model-select { max-width: 46vw; }
+  .topbar-tools .icon-btn { width: 28px; height: 28px; }
+  .topbar-title { font-size: 15px; }
+  /* 手机上一行装不下：会话设置收进设置弹窗，模型名让位给标题 */
+  #btnConvSettings { display: none; }
+  .model-select { max-width: 34vw; }
 
   /* 消息区与欢迎页 */
   :root {
