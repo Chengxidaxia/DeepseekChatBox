@@ -346,8 +346,20 @@ function renderChat() {
     return;
   }
   const versions = messageVersions(conv);
+  // 先规划：连续的「纯工具」消息合并成一组，其余按原样渲染
+  const items = [];
   for (const m of list) {
-    const node = messageView(m, versions);
+    if (m.role === 'tool') continue; // 结果已合并进对应的调用卡片
+    if (isToolOnlyMessage(m)) {
+      const last = items[items.length - 1];
+      if (last && last.run) last.msgs.push(m);
+      else items.push({ run: true, msgs: [m] });
+    } else {
+      items.push({ run: false, m });
+    }
+  }
+  for (const it of items) {
+    const node = it.run ? toolRunView(it.msgs) : messageView(it.m, versions);
     if (node) els.viewInner.append(node);
   }
   requestAnimationFrame(() => scrollToBottom(true));
@@ -413,7 +425,7 @@ function messageView(m, versions) {
   const body = h('div', { class: 'body' });
 
   if (m.reasoning) body.append(thinkingView(m));
-  if (m.toolCalls?.length) body.append(functionToolCards(m));
+  if (m.toolCalls?.length) body.append(toolGroupEl(collectToolCalls(m), `m:${m.id}`));
   if (m.serverToolCalls?.length) body.append(toolCardsView(m.serverToolCalls));
 
   if (m.error) {
@@ -472,43 +484,166 @@ function prettyArgs(raw) {
   try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return String(raw); }
 }
 
-/** 模型请求的本地工具调用：参数 + 结果 */
-function functionToolCards(m) {
+/** 联网类工具显示具体在搜什么/读哪一篇，比只写工具名有用 */
+const TOOL_META = { web_search: ['联网搜索', 'i-globe'], fetch_url: ['读取网页', 'i-file'] };
+
+/* 展开状态：renderChat 会整体重绘，用 Set 记住用户点开过哪些组/行 */
+const toolGroupOpen = new Set();
+const toolRowOpen = new Set();
+
+/** 把一条消息里的本地工具调用整理成可渲染的描述（参数 + 结果 + 耗时） */
+function collectToolCalls(m) {
   const conv = currentConversation();
-  const wrap = h('div', { class: 'tool-cards' });
-  for (const tc of m.toolCalls) {
+  const out = [];
+  for (const tc of m.toolCalls || []) {
     const name = tc.function?.name || 'tool';
     const rec = (m.toolResults || []).find((r) => r.id === tc.id)
       || conv?.messages.find((x) => x.role === 'tool' && x.tool_call_id === tc.id);
-    const ok = rec ? (rec.ok ?? rec.toolOk ?? true) : null;
-    const ms = rec ? (rec.ms ?? rec.toolMs) : null;
-    const card = h('div', { class: 'tool-card' });
-    // 联网工具显示具体在搜什么/读哪一篇，比只写工具名有用
-    const meta = { web_search: ['联网搜索', 'i-globe'], fetch_url: ['读取网页', 'i-file'] }[name];
+    const meta = TOOL_META[name];
     let sub = '';
     try {
       const a = JSON.parse(tc.function?.arguments || '{}');
       sub = String(a.query || a.url || '');
     } catch {}
-    card.append(h('div', { class: 'tool-card-head' }, [
-      iconEl(meta ? meta[1] : 'i-wrench'),
-      h('span', { text: meta ? meta[0] : '调用工具 · ' + name }),
-      sub ? h('span', { class: 'kind tool-sub', title: sub, text: '· ' + sub }) : null,
-      ok === null
-        ? h('span', { class: 'kind', text: '· 执行中…' })
-        : h('span', {
-          class: 'kind',
-          style: ok ? {} : { color: 'var(--state-error)' },
-          text: '· ' + (ok ? '成功' : '失败') + (ms ? ` · ${ms}ms` : ''),
-        }),
-    ]));
-    const bodyEl = h('div', { class: 'tool-card-body' });
-    const argsText = prettyArgs(tc.function?.arguments);
-    if (argsText && argsText !== '{}') bodyEl.append(h('pre', { class: 'tool-pre tool-args', text: argsText }));
-    if (rec?.content) bodyEl.append(h('pre', { class: 'tool-pre tool-result', text: rec.content }));
-    card.append(bodyEl);
-    wrap.append(card);
+    out.push({
+      key: tc.id ? `${m.id}:${tc.id}` : `${m.id}:${out.length}`,
+      name,
+      label: meta ? meta[0] : `${t('callTool')} · ${name}`,
+      icon: meta ? meta[1] : 'i-wrench',
+      sub,
+      ok: rec ? (rec.ok ?? rec.toolOk ?? true) : null,
+      ms: rec ? (rec.ms ?? rec.toolMs) : null,
+      argsText: prettyArgs(tc.function?.arguments),
+      resultText: rec?.content || '',
+    });
   }
+  return out;
+}
+
+function toolStatusSpan(c, withMs = true) {
+  if (c.ok === null) return h('span', { class: 'kind', text: '· ' + t('toolRunning') });
+  return h('span', {
+    class: 'kind',
+    style: c.ok ? {} : { color: 'var(--state-error)' },
+    text: '· ' + (c.ok ? t('toolOk') : t('failed')) + (withMs && c.ms ? ` · ${c.ms}ms` : ''),
+  });
+}
+
+/** 参数/结果块：复用 .tool-pre（自带 240px 上限 + 滚动） */
+function toolDetailEls(c) {
+  const els = [];
+  const args = c.argsText && c.argsText !== '{}' ? c.argsText : '';
+  if (args) els.push(h('pre', { class: 'tool-pre tool-args', text: args }));
+  if (c.resultText) els.push(h('pre', { class: 'tool-pre tool-result', text: c.resultText }));
+  else if (c.ok === null) els.push(h('pre', { class: 'tool-pre tool-result', text: t('toolRunning') }));
+  return els;
+}
+
+/**
+ * 工具调用分组：一次请求里的多个工具、以及连续多轮「只调工具不说话」的往返，
+ * 全部折叠成一行（工具调用 ×N），点开才看到每次调用的参数与结果。
+ */
+function toolGroupEl(calls, groupKey) {
+  if (!calls.length) return null;
+  const key = groupKey || calls.map((c) => c.key).join('|');
+  const open = toolGroupOpen.has(key);
+  const box = h('div', { class: 'tool-group' + (open ? '' : ' collapsed') });
+
+  const running = calls.some((c) => c.ok === null);
+  const failed = calls.filter((c) => c.ok === false).length;
+  const totalMs = calls.reduce((n, c) => n + (Number(c.ms) || 0), 0);
+  const status = running
+    ? h('span', { class: 'kind', text: '· ' + t('toolRunning') })
+    : failed
+      ? h('span', { class: 'kind', style: { color: 'var(--state-error)' }, text: `· ${t('toolSomeFailed', { n: failed })}` })
+      : calls.length > 1
+        ? h('span', { class: 'kind', text: '· ' + t('toolAllOk') + (totalMs ? ` · ${t('toolTotalMs', { ms: totalMs })}` : '') })
+        : null;
+
+  const headChildren = [];
+  if (calls.length === 1) {
+    const c = calls[0];
+    headChildren.push(iconEl(c.icon), h('span', { text: c.label }));
+    if (c.sub) headChildren.push(h('span', { class: 'kind tool-sub', title: c.sub, text: '· ' + c.sub }));
+    headChildren.push(toolStatusSpan(c));
+  } else {
+    headChildren.push(iconEl('i-wrench'), h('span', { text: t('toolGroupCalls', { n: calls.length }) }));
+    // 按工具名汇总，如「联网搜索 ×2」「读取网页 ×1」
+    const tally = new Map();
+    for (const c of calls) tally.set(c.label, (tally.get(c.label) || 0) + 1);
+    for (const [label, n] of tally) {
+      headChildren.push(h('span', { class: 'tool-chip', text: n > 1 ? `${label} ×${n}` : label }));
+    }
+    if (status) headChildren.push(status);
+  }
+  headChildren.push(iconEl('i-chevron', 'chev'));
+
+  const head = h('button', { class: 'tool-group-head', type: 'button', title: t('toolGroupCalls', { n: calls.length }) }, headChildren);
+  head.addEventListener('click', () => {
+    const collapsedNow = box.classList.toggle('collapsed');
+    if (collapsedNow) toolGroupOpen.delete(key);
+    else toolGroupOpen.add(key);
+  });
+
+  const body = h('div', { class: 'tool-group-body' });
+  if (calls.length === 1) {
+    body.append(...toolDetailEls(calls[0]));
+  } else {
+    calls.forEach((c, i) => {
+      const rowKey = `${key}#${i}`;
+      const row = h('div', { class: 'tool-row' + (toolRowOpen.has(rowKey) ? '' : ' collapsed') });
+      const rowHead = h('button', { class: 'tool-row-head', type: 'button' }, [
+        iconEl(c.icon),
+        h('span', { text: c.label }),
+        c.sub ? h('span', { class: 'kind tool-sub', title: c.sub, text: '· ' + c.sub }) : null,
+        toolStatusSpan(c),
+        iconEl('i-chevron', 'chev'),
+      ]);
+      rowHead.addEventListener('click', () => {
+        const collapsedNow = row.classList.toggle('collapsed');
+        if (collapsedNow) toolRowOpen.delete(rowKey);
+        else toolRowOpen.add(rowKey);
+      });
+      row.append(rowHead, h('div', { class: 'tool-row-body' }, toolDetailEls(c)));
+      body.append(row);
+    });
+  }
+  box.append(head, body);
+  return box;
+}
+
+/** 纯工具轮（模型只发起工具调用、没输出正文）——连续出现时合并成一组 */
+function isToolOnlyMessage(m) {
+  return Boolean(m) && m.role === 'assistant'
+    && !String(m.content || '').trim()
+    && !m.error && !m.refusal
+    && (m.toolCalls || []).length > 0
+    && !(m.serverToolCalls || []).length;
+}
+
+/** 把连续 N 轮「纯工具」往返合并渲染成一个气泡：思考块依次排开，工具调用合成一组 */
+function toolRunView(msgs) {
+  const wrap = h('div', { class: 'msg assistant toolrun', 'data-id': msgs[0].id });
+  const body = h('div', { class: 'body' });
+  const calls = [];
+  for (const m of msgs) {
+    if (m.reasoning) body.append(thinkingView(m));
+    calls.push(...collectToolCalls(m));
+  }
+  const group = toolGroupEl(calls, `run:${msgs[0].id}`);
+  if (group) body.append(group);
+
+  const withUsage = msgs.filter((m) => m.usage);
+  if (withUsage.length === 1) body.append(usageLine(withUsage[0]));
+  else if (withUsage.length > 1) body.append(usageLineMerged(withUsage));
+
+  // 只保留「重新生成」：指向这串工具往返的最后一轮
+  const acts = h('div', { class: 'msg-actions' });
+  if (!msgs.some((m) => m.streaming)) {
+    acts.append(actBtn('i-refresh', t('regenerate'), () => regenerate(msgs[msgs.length - 1])));
+  }
+  body.append(acts);
+  wrap.append(body);
   return wrap;
 }
 
@@ -584,9 +719,9 @@ function attachGridView(atts) {
   return grid;
 }
 
-function usageLine(m) {
+function usageLine(m, costOv) {
   const u = m.usage || {};
-  const cost = estimateCost(m);
+  const cost = costOv === undefined ? estimateCost(m) : costOv;
   const parts = [];
   if (u.prompt_tokens) parts.push(`${t('tokensIn')} ${u.prompt_tokens}`);
   if (u.completion_tokens) parts.push(`${t('tokensOut')} ${u.completion_tokens}`);
@@ -655,7 +790,34 @@ function estimateCost(m) {
   return {
     text: cur + cost.toFixed(cost < 0.01 ? 4 : 2),
     peak: pr.peak,
+    value: cost,
   };
+}
+
+/** 合并多轮「纯工具」往返的用量，输出一行统计（token 求和、费用相加） */
+function usageLineMerged(msgs) {
+  let prompt = 0; let completion = 0; let hit = 0; let think = 0;
+  let cost = 0; let peak = false;
+  for (const m of msgs) {
+    const u = m.usage || {};
+    prompt += u.prompt_tokens || 0;
+    completion += u.completion_tokens || 0;
+    hit += u.prompt_cache_hit_tokens || 0;
+    think += u.completion_tokens_details?.reasoning_tokens || 0;
+    const c = estimateCost(m);
+    if (c) { cost += c.value || 0; peak = peak || c.peak; }
+  }
+  const cur = settings.prices?.currency === 'USD' ? '$' : '¥';
+  const costOv = cost > 0 ? { text: cur + cost.toFixed(cost < 0.01 ? 4 : 2), peak } : null;
+  return usageLine({
+    model: msgs[msgs.length - 1].model || '',
+    usage: {
+      prompt_tokens: prompt,
+      completion_tokens: completion,
+      prompt_cache_hit_tokens: hit,
+      completion_tokens_details: { reasoning_tokens: think },
+    },
+  }, costOv);
 }
 
 /** 分支切换器（官方 BranchSwitcher：28 高，两侧箭头 + 1/2 计数） */

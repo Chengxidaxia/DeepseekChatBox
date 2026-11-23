@@ -501,6 +501,73 @@ body[data-theme='dark'] .topbar-badge.warn { background: #27241f; }
 }
 .tool-card-head .kind { color: var(--label-caption); }
 .tool-card-body { padding: 4px 6px 6px; display: flex; flex-direction: column; }
+
+/* 工具调用合并组：连续多轮调用折叠成一行 */
+.tool-group {
+  border: 1px solid var(--border-l2-thin);
+  border-radius: 14px;
+  background: var(--bg-layer-3);
+  overflow: hidden;
+  margin: 2px 0 12px;
+}
+.tool-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  background: var(--bg-hover);
+  color: var(--label-secondary);
+  font-size: 13px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-group-head:hover { background: var(--btn-ghost-active-fill); }
+.tool-group-head .kind { color: var(--label-caption); }
+.tool-group-head .chev { margin-left: auto; flex: none; transition: transform var(--ds-transition); }
+.tool-group:not(.collapsed) > .tool-group-head .chev { transform: rotate(180deg); }
+.tool-group.collapsed > .tool-group-body { display: none; }
+.tool-group-body { padding: 4px 6px 6px; display: flex; flex-direction: column; gap: 2px; }
+/* 头部里的工具名汇总小标签 */
+.tool-chip {
+  flex: none;
+  max-width: 16ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--bg-layer-3);
+  border: 1px solid var(--border-l2-thin);
+  color: var(--label-tertiary);
+  font-size: 11px;
+  line-height: 18px;
+}
+/* 组内单次调用 */
+.tool-row { border-radius: 10px; }
+.tool-row-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--label-secondary);
+  font-size: 12.5px;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.tool-row-head:hover { background: var(--bg-hover); }
+.tool-row-head .kind { color: var(--label-caption); }
+.tool-row-head .chev { margin-left: auto; flex: none; transition: transform var(--ds-transition); }
+.tool-row:not(.collapsed) > .tool-row-head .chev { transform: rotate(180deg); }
+.tool-row.collapsed > .tool-row-body { display: none; }
+.tool-row-body { display: flex; flex-direction: column; }
 .source {
   display: flex;
   gap: 8px;
@@ -2019,7 +2086,9 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 }
 .tool-args { color: var(--label-tertiary); }
 /* 工具卡片标题里的搜索词/网址：单行截断，完整内容看 title */
-.tool-card-head .tool-sub {
+.tool-card-head .tool-sub,
+.tool-group-head .tool-sub,
+.tool-row-head .tool-sub {
   flex: 1 1 auto;
   min-width: 0;
   max-width: 46ch;
@@ -2029,5 +2098,8 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 }
 @media (max-width: 640px) {
   .tool-card-head { gap: 6px; }
-  .tool-card-head .tool-sub { max-width: 20ch; }
+  .tool-card-head .tool-sub,
+  .tool-group-head .tool-sub,
+  .tool-row-head .tool-sub { max-width: 20ch; }
+  .tool-group-head .tool-chip { display: none; }
 }

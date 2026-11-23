@@ -1075,14 +1075,15 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       type: 'function',
       function: {
         name: 'find_tool',
-        description: '搜索本机可用的工具目录。当你觉得现有工具不够用、或需要确认有没有能做某件事的工具时调用它。传入你想完成的任务描述，会返回最相关的工具及其完整参数定义；返回的工具会在下一轮自动可用，你可以直接调用。',
+        description: '搜索本机可用的工具目录，或用 action="list" 列出全部工具。当你觉得现有工具不够用、或需要确认有没有能做某件事的工具时调用它。传入任务描述会返回最相关的工具及完整参数定义；传 action="list" 则返回全部工具的名字与一句话说明。返回的工具会在下一轮自动可用，可直接调用。',
         parameters: {
           type: 'object',
           properties: {
-            query: { type: 'string', description: '你想做什么，如「把中文翻译成英文」「检查端口是否开放」「算 token 数」' },
-            top_k: { type: 'integer', description: '返回几个工具，默认 5，最大 10' },
+            action: { type: 'string', enum: ['search', 'list'], description: 'list=列出全部工具目录（只要名字+一句话说明）；search=按 query 检索，默认 search' },
+            query: { type: 'string', description: '你想做什么，如「把中文翻译成英文」「检查端口是否开放」「算 token 数」。action=search 时必填；action=list 时可省略' },
+            top_k: { type: 'integer', description: 'search 时返回几个工具，默认 5，最大 10' },
           },
-          required: ['query'],
+          required: [],
           additionalProperties: false,
         },
       },
@@ -1852,8 +1853,32 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
     },
 
     async find_tool(args = {}) {
+      const action = String(args.action || '').trim().toLowerCase();
       const query = String(args.query || '').trim();
-      if (!query) return { ok: false, text: '缺少 query 参数。' };
+
+      // 子指令 list：直接给全部工具目录（名字 + 一句话说明），不做检索
+      const LIST_RE = /^(list|all|全部|全部工具|所有工具|列出|列出全部|目录)$/i;
+      const isList = action === 'list' || args.list === true || (!action && LIST_RE.test(query));
+      if (isList) {
+        // cmd_run 未开启时不出现在目录里，避免模型对着一个被服务端拒绝的工具空转
+        const raw = store.rawSettings && store.rawSettings();
+        const cmdOn = raw?.cmdEnabled === true;
+        const all = definitions.filter((d) => d.function.name !== 'find_tool' && (cmdOn || !d.meta?.cmd));
+        const names = all.map((d) => d.function.name);
+        const lines = all.map((d) => {
+          const f = d.function;
+          let brief = String(f.description || '').split(/[。；\n]/)[0].trim();
+          if (brief.length > 60) brief = brief.slice(0, 58) + '…';
+          return `- ${f.name} — ${brief}`;
+        });
+        return {
+          ok: true,
+          text: `可用工具共 ${all.length} 个${cmdOn ? '' : '（cmd_run 未开启，未列出）'}：\n\n${lines.join('\n')}\n\n这只是目录，已全部加入下一轮可用。需要某个工具的完整参数定义，用 find_tool(query="工具名或任务描述") 检索。`,
+          data: { action: 'list', names, count: all.length, listed: true },
+        };
+      }
+
+      if (!query) return { ok: false, text: '缺少 query 参数。想列出全部工具请传 action="list"。' };
       const topK = Math.min(10, Math.max(1, Number(args.top_k) || 5));
       const hits = searchToolDefs(definitions, query, topK);
       if (!hits.length) {

@@ -232,6 +232,9 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
   自己调 `find_tool(query)` 搜索工具目录 → 服务端返回匹配工具的名字/描述/参数 →
   前端把这些名字记入 `foundTools`，下一轮自动追加进 `tools`，模型直接调用。
   实测「算一下折扣」→ calculator + percentage，「检查端口」→ port_check。
+  - **`list` 子指令（本次新增）**：`find_tool({action:"list"})`（或 `query:"list"/"全部"`）直接返回全部
+    工具目录（名字 + 一句话说明，按 60 字截断），并把它们一并加入下一轮可用；
+    `cmd_run` 未开启时不会出现在目录里。空参数调用会提示「想列出全部工具请传 action="list"」。
 - `token_count` 用官方 `DeepSeek-V4.1-Flash` 的 `tokenizer.json`（6.4 MB，存 `public/vendor/tokenizer/`），
   自研 Node BPE 实现（`server/tokenizer-core.cjs`，零依赖）：预分词三条正则 + ByteLevel 映射 + merges 合并。
   V3 / R1 / V4-Pro / V4.1-Flash 共用同一份 128000 基础词表，所以一个词表覆盖全部模型。
@@ -242,7 +245,8 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
   服务端 `tools.call()` 再校验一次——即使浏览器缓存了旧定义、或直接调 `/api/tools/call`，未开启时一律拒绝。
   默认超时 30 秒（最大 120 秒），输出上限 6 万字节（约 2 万字符），cmd 的 GBK 中文输出按替换字符数自动选解码。
   用完建议关掉。
-- 一轮对话最多 5 次「模型请求工具 → 执行 → 再回答」循环；每次调用在消息里显示参数、结果与耗时
+- 一轮对话最多 5 次「模型请求工具 → 执行 → 再回答」循环；**连续多轮、以及同一轮里的多个调用会合并成一张折叠卡片**
+  （`工具调用 ×N` + 工具名汇总），点开才列出每次调用的参数、结果与耗时，不再一行一个占满屏幕
 - 关闭开关即不声明 `tools`，请求体退回普通对话
 
 ### 会话分组与独立设置
