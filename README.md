@@ -300,6 +300,26 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 - 主题：浅色 / 深色 / 跟随系统（令牌取自官方 `main.css` 的 `body` 与 `body[data-ds-dark-theme]`）
 - 响应式：≤900px 侧栏变抽屉，默认收起
 
+#### 视觉取值的来源（全部为官方站实测，非估算）
+
+用无头浏览器加载官方页面读取 computed style，逐项对齐：
+
+| 项 | 官方取值 | 本项目 |
+|---|---|---|
+| 字体栈 | `"quote-cjk-patch", "Inter", system-ui, …` | 同（内置 Inter 拉丁子集 4 字重，共 114KB） |
+| 正文字号 / 行高 | 16px / 28px | 同 |
+| 侧栏 | 261px、`#f9fafb`、`padding 6px 12px 0`、右边框 `1px rgba(0,0,0,.04)` | 同 |
+| 会话项 | 40px 高、`radius 12px`、`padding 9px 6px 9px 10px`、14px/22px | 同 |
+| 新对话按钮 | 236×40、`radius 100px`、`padding 0 16px`、14px/500 | 同 |
+| 输入框外壳 | `radius 24px`、`border 1px rgba(0,0,0,.1)`、三层阴影 `0 4px 12px rgba(0,0,0,.02), 0 2px 2px rgba(72,104,178,.01), 0 30px 60px rgba(72,104,178,.03)` | 同 |
+| 输入框内边距 | `12px 12px 0 16px`、字号 16px | 同 |
+| 深度思考 / 智能搜索 | 34px 高、`radius 18px`、13px/24px 500；选中 `#edf3fe` 底 + `#b7c8fe` 边框 + `#3964fe` 字 | 同 |
+| 发送按钮 | 34×34、`radius 50%`、`#3964fe` | 同 |
+| 品牌色 | `#3964fe`（`--dsw-static-deepseek-500`） | 同 |
+
+Inter 只覆盖拉丁字符（`unicode-range` 与官方一致），中文继续走系统字体 —— 这也是官方做法，不是缺字。
+官方空态没有「建议胶囊」，本项目的是自创组件，仅沿用官方的 18px 圆角与 13px/500 语言。
+
 ---
 
 ## 3. 目录结构
