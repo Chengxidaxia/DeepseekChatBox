@@ -902,22 +902,77 @@ function toolCardsView(calls) {
   return wrap;
 }
 
-function attachGridView(atts) {
+/** 打开附件：图片进灯箱，纯文本弹窗看原文，其它交给浏览器（PDF 内联预览，其余下载） */
+function openAttachment(a) {
+  if (!a) return;
+  if (a.kind === 'image') {
+    const src = a.previewUrl || a.dataUrl || (a.attId ? attachmentUrl(a.attId) : '');
+    if (src) openLightbox(src);
+    else toast('这张图已不在本地');
+    return;
+  }
+  if (typeof a.text === 'string' && a.text) { openTextViewer(a); return; }
+  if (a.attId) { window.open(attachmentUrl(a.attId), '_blank', 'noopener'); return; }
+  if (a.dataUrl) { window.open(a.dataUrl, '_blank', 'noopener'); return; }
+  if (a._file) { const url = URL.createObjectURL(a._file); window.open(url, '_blank', 'noopener'); setTimeout(() => URL.revokeObjectURL(url), 60000); return; }
+  toast('文件已不在本地');
+}
+
+/** 纯文本附件预览（解析出来的 txt/md/csv 原文都在内存里，直接弹窗看，不依赖服务端） */
+function openTextViewer(a) {
+  const overlay = h('div', { class: 'file-preview' });
+  const body = h('pre', { text: a.text });
+  const close = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const onKey = (e) => { if (e.key === 'Escape') close(); };
+  const copyBtn = h('button', { class: 'btn sm ghost', type: 'button', text: t('copy') });
+  copyBtn.addEventListener('click', async () => { const ok = await copyText(a.text); toast(ok ? t('copied') : '复制失败'); });
+  const x = h('button', { class: 'icon-btn sm', type: 'button', title: '关闭' }, [iconEl('i-x')]);
+  x.addEventListener('click', close);
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+  overlay.append(h('div', { class: 'panel' }, [
+    h('div', { class: 'head' }, [
+      iconEl('i-file'),
+      h('span', { class: 'name', text: a.name || '文本' }),
+      h('span', { class: 'size', text: formatBytes((a.size || a.text.length)) }),
+      h('div', { class: 'spacer' }),
+      copyBtn, x,
+    ]),
+    h('div', { class: 'body' }, [body]),
+  ]));
+  document.body.append(overlay);
+  document.addEventListener('keydown', onKey);
+}
+
+/** 消息里的附件栅格。editable=true 时每格右上角带「移除」，用于编辑消息时管理附件 */
+function attachGridView(atts, { editable = false, onChange = null } = {}) {
   const grid = h('div', { class: 'attach-grid' });
   for (const a of atts) {
+    let cell;
     if (a.kind === 'image' && (a.dataUrl || a.previewUrl || a.attId)) {
       const src = a.previewUrl || a.dataUrl || attachmentUrl(a.attId);
       const img = h('img', { src, alt: a.name || '' });
-      const thumb = h('div', { class: 'attach-thumb' }, [img]);
-      thumb.addEventListener('click', () => openLightbox(img.src));
-      grid.append(thumb);
+      cell = h('div', { class: 'attach-thumb', title: '点击查看大图' }, [img]);
+      cell.addEventListener('click', () => openLightbox(img.src));
     } else {
-      grid.append(h('div', { class: 'attach-file' }, [
+      cell = h('div', { class: 'attach-file clickable', title: '点击查看文件' }, [
         iconEl('i-file'),
         h('span', { class: 'name', text: a.name || '文件' }),
         h('span', { class: 'size', text: formatBytes(a.size || 0) }),
-      ]));
+      ]);
+      cell.addEventListener('click', () => openAttachment(a));
     }
+    if (editable) {
+      cell.classList.add('editable');
+      const rm = h('button', { class: 'attach-x', type: 'button', title: '移除' }, [iconEl('i-x')]);
+      rm.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const i = atts.indexOf(a);
+        if (i >= 0) atts.splice(i, 1);
+        onChange?.(atts);
+      });
+      cell.append(rm);
+    }
+    grid.append(cell);
   }
   return grid;
 }
@@ -1849,6 +1904,16 @@ function startEdit(m) {
   const cancel = h('button', { class: 'btn sm ghost', type: 'button', text: t('cancel') });
   const save = h('button', { class: 'btn sm primary', type: 'button', text: t('save') + ' & ' + t('regenerate') });
   actions.append(cancel, save);
+  // 编辑时也要能管理附件：显示缩略图/文件卡，点开可看，右上角 ✕ 移除（保存时按剩下的走）
+  const editAtts = (m.attachments || []).map((a) => ({ ...a }));
+  const attsBox = h('div', { class: 'edit-atts' });
+  const paintAtts = () => {
+    attsBox.replaceChildren();
+    if (!editAtts.length) return;
+    attsBox.append(attachGridView(editAtts, { editable: true, onChange: paintAtts }));
+  };
+  paintAtts();
+  if (editAtts.length) box.append(attsBox);
   box.append(ta, actions);
   wrap.replaceChildren(box);
   ta.focus();
@@ -1861,7 +1926,7 @@ function startEdit(m) {
     if (!text) return;
     normalizeConv(conv);
     // 编辑后作为同一父节点下的新分支，原提问与原回答都保留
-    const userMsg = { ...m, id: uid('u'), content: text, createdAt: Date.now() };
+    const userMsg = { ...m, id: uid('u'), content: text, attachments: editAtts.slice(), createdAt: Date.now() };
     const assistant = {
       id: uid('a'), role: 'assistant', content: '', reasoning: '', annotations: [],
       serverToolCalls: [], model: settings.model, createdAt: Date.now(), streaming: true,
@@ -1966,6 +2031,20 @@ function renderTray() {
         });
       }
       card.append(mask);
+    }
+
+    // 半透明卡片也能点开看：图片进灯箱，文件另开一页（上传中/失败时点不进）
+    if (a.ready !== false && !a.error) {
+      const src = a.kind === 'image' ? (a.previewUrl || a.dataUrl || (a.attId ? attachmentUrl(a.attId) : '')) : '';
+      if (a.kind === 'image' && src) {
+        card.classList.add('clickable');
+        card.title = '点击查看大图';
+        card.addEventListener('click', () => openLightbox(src));
+      } else if (a.kind !== 'image') {
+        card.classList.add('clickable');
+        card.title = '点击查看文件';
+        card.addEventListener('click', () => openAttachment(a));
+      }
     }
 
     const x = h('button', { class: 'x', type: 'button', title: '移除' }, [iconEl('i-x')]);
