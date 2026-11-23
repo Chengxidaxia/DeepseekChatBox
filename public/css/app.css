@@ -1177,11 +1177,11 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   align-items: center;
   justify-content: center;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 6px;
   font-size: 12px;
   line-height: 18px;
   color: var(--label-caption);
-  min-height: 18px;
+  min-height: 26px;   /* 放得下那颗可点的上下文胶囊 */
 }
 .composer-foot .err { color: var(--state-error); }
 
@@ -1232,73 +1232,117 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
 .effort-sep { height: 1px; margin: 2px 0 10px; background: var(--border-l1); }
 .effort-foot { text-align: center; font-size: 13px; line-height: 20px; color: var(--label-secondary); margin-bottom: 8px; }
 .effort-foot b { color: var(--label-primary); font-weight: 600; }
-.effort-track { position: relative; height: 34px; margin: 0 4px 2px; }
-.effort-range, .usage-range {
-  appearance: none;
-  -webkit-appearance: none;
+/* ---------------------- 滑条（左侧填充 + 可动滑点） ---------------------- */
+.ds-range {
+  position: relative;
+  height: 34px;
+  margin: 0 4px 12px;
+  border-radius: 100px;
+  background: var(--bg-hover);
+  touch-action: none;
+}
+/* 滑点左边已选区间 */
+.ds-range-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  border-radius: 100px;
+  background: var(--brand-primary);
+  opacity: .3;
+}
+/* 滑点自己画（原生拇指透明），这样才能做过渡动画 */
+.ds-range-thumb {
+  position: absolute;
+  top: 0;
+  left: 17px;
+  width: 34px;
+  height: 34px;
+  margin-left: -17px;
+  border-radius: 50%;
+  background: var(--menu-bg);
+  border: 1px solid var(--border-l2-thin);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, .12);
+  pointer-events: none;
+}
+.ds-range.anim .ds-range-fill { transition: width .18s cubic-bezier(.22, .8, .24, 1); }
+.ds-range.anim .ds-range-thumb { transition: left .18s cubic-bezier(.22, .8, .24, 1), box-shadow var(--ds-transition); }
+.ds-range:active .ds-range-thumb { box-shadow: 0 3px 10px rgba(0, 0, 0, .18); }
+/* 刻度点 */
+.ds-range-dots { position: absolute; inset: 0; pointer-events: none; }
+.ds-range-dot {
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  margin: -2.5px 0 0 -2.5px;
+  border-radius: 50%;
+  background: var(--label-caption);
+  opacity: .45;
+}
+/* 透明的原生 range 盖在上面，负责拖拽与键盘 */
+.ds-range-input {
+  position: absolute;
+  inset: 0;
   width: 100%;
   height: 34px;
   margin: 0;
-  border-radius: 100px;
-  background: var(--bg-hover);
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
   outline: none;
   cursor: pointer;
 }
-.effort-range::-webkit-slider-thumb, .usage-range::-webkit-slider-thumb {
+.ds-range-input::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: var(--menu-bg);
-  border: 1px solid var(--border-l2-thin);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .12);
-  transition: box-shadow var(--ds-transition);
+  background: transparent;
+  border: none;
 }
-.effort-range:active::-webkit-slider-thumb, .usage-range:active::-webkit-slider-thumb { box-shadow: 0 3px 10px rgba(0, 0, 0, .18); }
-.effort-range::-moz-range-thumb, .usage-range::-moz-range-thumb {
+.ds-range-input::-moz-range-thumb {
   width: 34px;
   height: 34px;
   border-radius: 50%;
-  background: var(--menu-bg);
-  border: 1px solid var(--border-l2-thin);
-  box-shadow: 0 2px 6px rgba(0, 0, 0, .12);
+  background: transparent;
+  border: none;
 }
-.effort-range::-moz-range-track, .usage-range::-moz-range-track { height: 34px; border-radius: 100px; background: var(--bg-hover); }
-/* 轨道上的刻度点（纯装饰，跟截图一致） */
-.effort-dots {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-around;
-  padding: 0 34px;
-  pointer-events: none;
-}
-.effort-dots .effort-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: var(--label-caption);
-  opacity: .35;
-}
-.effort-dots .effort-dot.on { opacity: .75; }
+.ds-range:has(.ds-range-input:focus-visible) { box-shadow: 0 0 0 3px rgba(57, 100, 254, .28); }
+.ds-range.is-disabled { opacity: .45; }
+.ds-range.is-disabled .ds-range-input { cursor: not-allowed; }
 
 /* ---------------------- 上下文用量面板 ---------------------- */
 /* 输入框下方那颗小胶囊 */
+/* 做成一眼看得出能点的小胶囊：浅底 + 描边 + 右侧上箭头 + 悬停提亮 */
 .ctx-chip {
-  border: none;
-  background: transparent;
-  padding: 1px 6px;
-  border-radius: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 8px 0 10px;
+  border: 1px solid var(--border-l2-thin);
+  border-radius: 100px;
+  background: var(--bg-hover);
   font-size: 12px;
   line-height: 18px;
-  color: var(--label-caption);
+  font-weight: 500;
+  color: var(--label-secondary);
   font-variant-numeric: tabular-nums;
   cursor: pointer;
-  transition: background var(--ds-transition), color var(--ds-transition);
+  transition: background var(--ds-transition), border-color var(--ds-transition), color var(--ds-transition), box-shadow var(--ds-transition);
 }
-.ctx-chip:hover { background: var(--bg-hover); color: var(--label-secondary); }
+.ctx-chip:hover {
+  background: var(--menu-bg);
+  border-color: var(--border-l2);
+  color: var(--label-primary);
+  box-shadow: var(--shadow-menu);
+}
+.ctx-chip:active { transform: translateY(1px); }
+.ctx-chip .icon { width: 12px; height: 12px; color: var(--label-caption); transform: rotate(180deg); }
+.ctx-chip:hover .icon { color: var(--label-tertiary); }
 
 .usage-panel { width: min(320px, calc(100vw - 56px)); padding: 6px 10px 12px; }
 .usage-head {
@@ -1358,8 +1402,6 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   margin-bottom: 6px;
 }
 .usage-slider-label b { color: var(--label-primary); font-weight: 600; }
-.usage-range { margin-bottom: 12px; }
-.usage-range:disabled { opacity: .45; cursor: not-allowed; }
 .usage-hint {
   text-align: center;
   font-size: 11px;

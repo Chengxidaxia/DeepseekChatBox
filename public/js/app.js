@@ -1113,6 +1113,109 @@ function convUsage() {
   };
 }
 
+/**
+ * 通用滑条：滑点左边填色 + 滑点可跟手拖动，点击/键盘切换时带滑行动画。
+ * （原生 range 的拇指没法做过渡，所以拇指自己画，原生的只留透明热区）
+ * 返回 { el, value(), set(v), refresh(), setDisabled(b) }
+ */
+function makeSlider({ max, value = 0, dots = false, ariaLabel = '', onInput, onChange }) {
+  const wrap = h('div', { class: 'ds-range' });
+  const fill = h('div', { class: 'ds-range-fill' });
+  const thumb = h('div', { class: 'ds-range-thumb' });
+  const input = h('input', {
+    class: 'ds-range-input', type: 'range', min: '0', max: String(max), step: '1', value: String(value),
+  });
+  if (ariaLabel) input.setAttribute('aria-label', ariaLabel);
+  wrap.append(fill, thumb);
+  const dotEls = [];
+  if (dots) {
+    const box = h('div', { class: 'ds-range-dots' });
+    for (let i = 0; i <= max; i++) { const d = h('i', { class: 'ds-range-dot' }); dotEls.push(d); box.append(d); }
+    wrap.append(box);
+  }
+  wrap.append(input);
+
+  const val = () => Number(input.value) || 0;
+  const gutter = 17;                       // 滑点半径：滑点中心只在 [17, w-17] 之间跑
+  function metrics() {
+    const w = wrap.clientWidth || 296;
+    return { w, span: Math.max(1, w - gutter * 2) };
+  }
+  function xOf(v, m = metrics()) { return gutter + m.span * (max ? v / max : 0); }
+  function paintX(x, animate) {
+    wrap.classList.toggle('anim', animate !== false);
+    fill.style.width = x + 'px';
+    thumb.style.left = x + 'px';
+  }
+  function paint(animate) {
+    const m = metrics();
+    paintX(xOf(val(), m), animate);
+    dotEls.forEach((d, i) => { d.style.left = xOf(i, m) + 'px'; });
+  }
+  function setValue(v, { animate = true, silent = false } = {}) {
+    const next = Math.min(max, Math.max(0, Math.round(v)));
+    const changed = next !== val();
+    input.value = String(next);
+    paint(animate);
+    if (changed && !silent) onInput?.(next);
+    return next;
+  }
+
+  /* 拖拽自己算：原生 range 的拇指没法做过渡，而且按「档位」跳，跟不住鼠标 */
+  let dragging = false;
+  function pointerToX(clientX) {
+    const r = wrap.getBoundingClientRect();
+    const m = { w: r.width, span: Math.max(1, r.width - gutter * 2) };
+    const x = Math.min(r.width - gutter, Math.max(gutter, clientX - r.left));
+    return { x, m, v: Math.round(((x - gutter) / m.span) * max) };
+  }
+  function follow(clientX) {
+    const { x, v } = pointerToX(clientX);
+    paintX(x, false);                       // 跟手：不加过渡
+    if (v !== val()) { input.value = String(v); onInput?.(v); }
+  }
+  function release() {
+    if (!dragging) return;
+    dragging = false;
+    const v = val();
+    paint(true);                            // 松手：从当前位置滑到该档位
+    onChange?.(v);
+  }
+
+  wrap.addEventListener('pointerdown', (e) => {
+    if (input.disabled || e.button > 0) return;
+    e.preventDefault();                     // 关掉原生拖拽，改由自己算（否则按档位跳）
+    dragging = true;
+    try { wrap.setPointerCapture(e.pointerId); } catch { /* 老浏览器忽略 */ }
+    input.focus({ preventScroll: true });
+    follow(e.clientX);
+  });
+  wrap.addEventListener('pointermove', (e) => {
+    if (!dragging) return;
+    follow(e.clientX);
+  });
+  wrap.addEventListener('pointerup', () => { release(); });
+  wrap.addEventListener('pointercancel', () => { release(); });
+
+  // 键盘（方向键 / Home / End）走原生 input 事件，这里带过渡重排
+  input.addEventListener('input', () => { if (!dragging) setValue(val(), { animate: true, silent: false }); });
+  input.addEventListener('change', () => { if (!dragging) { paint(true); onChange?.(val()); } });
+
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(() => paint(false)).observe(wrap);
+  requestAnimationFrame(() => paint(false));
+
+  return {
+    el: wrap,
+    value: val,
+    set(v, animate = true) { setValue(v, { animate, silent: true }); },
+    refresh: (animate = false) => paint(animate),
+    setDisabled(b) {
+      input.disabled = Boolean(b);
+      wrap.classList.toggle('is-disabled', Boolean(b));
+    },
+  };
+}
+
 /** 上下文用量面板：上面用量条，底下「总上下文上限」与「思考强度」两条滑条 */
 function openUsagePanel(anchor) {
   if (state.menu && state.menuAnchor === anchor) { closeMenu(); return; }
@@ -1133,17 +1236,37 @@ function openUsagePanel(anchor) {
   if (!stepsK.includes(modelK)) stepsK.push(modelK);
   stepsK.sort((a, b) => a - b);
   const curK = Math.round((data.limit > 0 ? data.limit : data.modelMax) / 1024);
-  const ctxRange = h('input', {
-    class: 'usage-range', type: 'range', min: '0', max: String(stepsK.length - 1), step: '1',
-    value: String(Math.max(0, stepsK.indexOf(curK))), 'aria-label': '总上下文上限',
-  });
 
   const EFFORTS = ['low', 'high', 'max'];
   const effNames = { low: t('effortLow'), high: t('effortHigh'), max: t('effortMax') };
-  let effIdx = Math.max(0, EFFORTS.indexOf(eff().effort || 'high'));
-  const effortRange = h('input', {
-    class: 'usage-range', type: 'range', min: '0', max: '2', step: '1',
-    value: String(effIdx), 'aria-label': t('reasoningEffort'),
+  const effIdx = Math.max(0, EFFORTS.indexOf(eff().effort || 'high'));
+
+  const ctxS = makeSlider({
+    max: stepsK.length - 1,
+    value: Math.max(0, stepsK.indexOf(curK)),
+    ariaLabel: '总上下文上限',
+    onInput: (v) => {
+      const k = stepsK[v] || modelK;
+      ctxLabel.textContent = `${fmtWindow(k * 1024)} 上下文 · ${k >= modelK ? '默认' : '自定义'}`;
+    },
+    onChange: (v) => {
+      const k = stepsK[v] || modelK;
+      saveSettings({ contextLimit: k >= modelK ? 0 : k * 1024 });
+      paint();
+      updateCtxChip(true);
+    },
+  });
+  const effortS = makeSlider({
+    max: 2,
+    value: effIdx,
+    dots: true,
+    ariaLabel: t('reasoningEffort'),
+    onInput: (v) => { effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[EFFORTS[v] || 'high']}`; },
+    onChange: (v) => {
+      const lv = EFFORTS[v] || 'high';
+      setEffective('effort', lv);
+      effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[lv]}`;
+    },
   });
 
   function paint() {
@@ -1167,32 +1290,13 @@ function openUsagePanel(anchor) {
         h('span', { class: 'pct', text: share + '%' }),
       ]);
     }));
-    const k = stepsK[Number(ctxRange.value)] || modelK;
+    const k = stepsK[ctxS.value()] || modelK;
     ctxLabel.textContent = `${fmtWindow(k * 1024)} 上下文 · ${k >= modelK ? '默认' : '自定义'}`;
     hintEl.textContent = d.limit
       ? '超出上限的旧对话会在发送时按整轮截断'
       : '默认使用模型完整窗口，不做截断';
-    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[EFFORTS[Number(effortRange.value)] || 'high']}`;
+    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[EFFORTS[effortS.value()] || 'high']}`;
   }
-
-  ctxRange.addEventListener('input', () => {
-    const k = stepsK[Number(ctxRange.value)] || modelK;
-    ctxLabel.textContent = `${fmtWindow(k * 1024)} 上下文 · ${k >= modelK ? '默认' : '自定义'}`;
-  });
-  ctxRange.addEventListener('change', () => {
-    const k = stepsK[Number(ctxRange.value)] || modelK;
-    saveSettings({ contextLimit: k >= modelK ? 0 : k * 1024 });
-    paint();
-    updateCtxChip(true);
-  });
-  effortRange.addEventListener('input', () => {
-    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[EFFORTS[Number(effortRange.value)] || 'high']}`;
-  });
-  effortRange.addEventListener('change', () => {
-    const lv = EFFORTS[Number(effortRange.value)] || 'high';
-    setEffective('effort', lv);
-    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[lv]}`;
-  });
 
   const closeBtn = h('button', { class: 'icon-btn sm', type: 'button', title: '关闭', 'aria-label': '关闭' }, [iconEl('i-x')]);
   closeBtn.addEventListener('click', () => closeMenu());
@@ -1204,28 +1308,37 @@ function openUsagePanel(anchor) {
     legendEl,
     h('div', { class: 'usage-sep' }),
     ctxLabel,
-    ctxRange,
+    ctxS.el,
     hintEl,
     effortLabel,
-    effortRange,
+    effortS.el,
     h('div', { class: 'usage-foot', text: `本会话 输入 ${fmtTok(data.tok.prompt)} · 输出 ${fmtTok(data.tok.completion)} · 预估 ${data.tok.currency}${data.tok.cost.toFixed(data.tok.cost < 0.01 ? 4 : 2)}` }),
   ]);
   paint();                       // 先填内容再定位：否则面板会长高、把底边顶出视口
   showMenu(anchor, [panel], 'up');
   if (!eff().thinking) {
-    effortRange.disabled = true;
+    effortS.setDisabled(true);
     effortLabel.textContent = `${t('reasoningEffort')} · 深度思考已关闭`;
   }
+  // 面板插进 DOM 后宽度才确定，这里重排一次填充与滑点位置
+  ctxS.refresh(false); effortS.refresh(false);
 }
 
 /** 输入框下方那颗「上下文 xx / yy」小胶囊，点开就是用量面板 */
 let ctxChipAt = 0;
 function mountCtxChip() {
   if (els.ctxChip || !els.foot) return;
-  const btn = h('button', { class: 'ctx-chip hidden', type: 'button', title: '上下文用量' });
+  const txt = h('span', { class: 'txt' });
+  const chev = iconEl('i-chevron', 'icon');
+  const btn = h('button', {
+    class: 'ctx-chip hidden', type: 'button',
+    title: '查看上下文用量（可调上下文上限与思考强度）',
+    'aria-haspopup': 'dialog',
+  }, [txt, chev]);
   btn.addEventListener('click', () => openUsagePanel(btn));
   els.foot.append(btn);
   els.ctxChip = btn;
+  els.ctxChipText = txt;
   updateCtxChip(true);
 }
 function updateCtxChip(force = false) {
@@ -1238,7 +1351,7 @@ function updateCtxChip(force = false) {
   els.ctxChip.classList.toggle('hidden', !on);
   if (!on) return;
   const pct = d.maxCtx ? Math.min(100, (d.used / d.maxCtx) * 100) : 0;
-  els.ctxChip.textContent = `上下文 ${fmtTok(d.used)} / ${fmtWindow(d.maxCtx)} · ${pct.toFixed(pct >= 10 ? 0 : 1)}%`;
+  (els.ctxChipText || els.ctxChip).textContent = `上下文 ${fmtTok(d.used)} / ${fmtWindow(d.maxCtx)} · ${pct.toFixed(pct >= 10 ? 0 : 1)}%`;
 }
 
 
@@ -2364,25 +2477,21 @@ function effortMenu() {
   const bigVal = h('b', { class: 'effort-big', text: names[EFFORT_LEVELS[idx]] });
   const lvTag = h('span', { class: 'effort-tag', text: EFFORT_LEVELS[idx] });
   const footVal = h('b', { text: names[EFFORT_LEVELS[idx]] });
-  const dots = EFFORT_LEVELS.map((lv, i) => h('i', { class: 'effort-dot' + (i === idx ? ' on' : ''), title: names[lv] }));
 
   const paint = () => {
     const lv = EFFORT_LEVELS[idx];
     bigVal.textContent = names[lv];
     lvTag.textContent = lv;
     footVal.textContent = names[lv];
-    dots.forEach((d, i) => d.classList.toggle('on', i === idx));
   };
 
-  const range = h('input', {
-    class: 'effort-range', type: 'range', min: '0', max: String(EFFORT_LEVELS.length - 1), step: '1',
-    value: String(idx), 'aria-label': t('reasoningEffort'),
-  });
-  range.addEventListener('input', () => { idx = Number(range.value) || 0; paint(); });
-  range.addEventListener('change', () => {
-    idx = Number(range.value) || 0;
-    paint();
-    setEffective('effort', EFFORT_LEVELS[idx]);
+  const slider = makeSlider({
+    max: EFFORT_LEVELS.length - 1,
+    value: idx,
+    dots: true,
+    ariaLabel: t('reasoningEffort'),
+    onInput: (v) => { idx = v; paint(); },
+    onChange: (v) => { idx = v; paint(); setEffective('effort', EFFORT_LEVELS[idx]); },
   });
 
   const closeBtn = h('button', { class: 'icon-btn sm', type: 'button', title: '关闭', 'aria-label': '关闭' }, [iconEl('i-x')]);
@@ -2394,9 +2503,10 @@ function effortMenu() {
     h('div', { class: 'effort-desc', text: '档位越高，思考越久、费用越高' }),
     h('div', { class: 'effort-sep' }),
     h('div', { class: 'effort-foot' }, [h('span', { text: t('reasoningEffort') + ' · ' }), footVal]),
-    h('div', { class: 'effort-track' }, [range, h('div', { class: 'effort-dots' }, dots)]),
+    slider.el,
   ]);
   showMenu(els.effort, [panel], 'up');
+  slider.refresh(false);
 }
 
 
