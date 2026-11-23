@@ -1,6 +1,7 @@
 /* DeepSeek API 封装：请求构造、SSE 解析、文件上传、语音 */
 import { settings } from './store.js';
 import { pickTools } from './tool-search.js';
+import { estimateTokens } from './util.js';
 
 export const FALLBACK_MODELS = [
   {
@@ -127,7 +128,38 @@ export async function transcribe(blob, filename = 'speech.webm') {
 /* -------------------------- 消息构造 -------------------------- */
 
 /** 把本地消息数组转换成 API messages */
-export function toApiMessages(history, { tools = false, reminder = null, systemPrompt = '' } = {}) {
+/** 一条 API 消息的 token 粗估（含 tool_calls 参数） */
+function apiMsgTokens(m) {
+  let text = typeof m.content === 'string' ? m.content : '';
+  if (Array.isArray(m.content)) {
+    for (const part of m.content) text += ' ' + (part.text || part.image_url?.url || '');
+  }
+  if (m.tool_calls) text += ' ' + JSON.stringify(m.tool_calls.map((t) => t.function || t));
+  return estimateTokens(text) + 4;
+}
+
+/** 按预算裁剪历史：整轮丢弃（从最早的 user 轮开始），保留 system 与最近若干轮，
+ *  这样不会把 tool 结果和它的 tool_calls 拆开。返回 { list, dropped }。 */
+export function trimToBudget(list, budget) {
+  if (!budget) return { list, dropped: 0 };
+  const sys = list[0] && list[0].role === 'system' ? [list[0]] : [];
+  const rest = list.slice(sys.length);
+  const cost = (arr) => arr.reduce((n, m) => n + apiMsgTokens(m), 0);
+  let total = cost(sys) + cost(rest);
+  if (total <= budget) return { list, dropped: 0 };
+
+  const starts = [];
+  rest.forEach((m, i) => { if (m.role === 'user') starts.push(i); });
+  for (let k = 0; k < starts.length; k++) {
+    const slice = rest.slice(starts[k]);
+    if (cost(sys) + cost(slice) <= budget) return { list: [...sys, ...slice], dropped: k };
+  }
+  // 只剩最后一轮仍超预算：保留最后一段，交给模型自己截断
+  const last = starts.length ? starts[starts.length - 1] : 0;
+  return { list: [...sys, ...rest.slice(last)], dropped: Math.max(0, starts.length - 1) };
+}
+
+export function toApiMessages(history, { tools = false, reminder = null, systemPrompt = '', maxInputTokens = 0 } = {}) {
   const out = [];
   if (systemPrompt && systemPrompt.trim()) {
     out.push({ role: 'system', content: systemPrompt.trim() });
@@ -172,7 +204,8 @@ export function toApiMessages(history, { tools = false, reminder = null, systemP
       out.push({ role: 'tool', tool_call_id: m.tool_call_id, content: m.content || '' });
     }
   }
-  return out;
+  // 面板里设了「上下文上限」就按预算裁掉最早的整轮，避免请求被服务端拒绝
+  return trimToBudget(out, maxInputTokens).list;
 }
 
 /** 生成 latest_reminder 内容：<date>,<weekday>,<location>,<platform>,<language> */
@@ -284,7 +317,10 @@ export function buildPayload(history, {
     const extra = webSystemPrompt({ search: localWebSearch, read: localWebFetch });
     systemPrompt = systemPrompt.trim() ? `${systemPrompt.trim()}\n\n${extra}` : extra;
   }
-  const messages = toApiMessages(history, { tools: hasTools, reminder, systemPrompt });
+  const messages = toApiMessages(history, {
+    tools: hasTools, reminder, systemPrompt,
+    maxInputTokens: Number(s.contextLimit) || 0,
+  });
   if (continuePrefix) {
     messages.push({ role: 'assistant', content: continuePrefix, prefix: true });
   }

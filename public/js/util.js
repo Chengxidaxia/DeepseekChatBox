@@ -50,6 +50,22 @@ export function formatBytes(n) {
   return (i === 0 ? v : v.toFixed(v < 10 ? 1 : 0)) + ' ' + u[i];
 }
 
+/** 粗估 token 数（离线、无精确 tokenizer 时用）：
+ *  中日韩字符按 1 token，其余按 3.2 字符 1 token —— 用于上下文用量与截断预算，误差 ±20% 量级。
+ *  精确数字一律以服务端返回的 usage 为准（上下文用量面板会用最后一条 usage 做锚点校正）。
+ */
+export function estimateTokens(text) {
+  const s = typeof text === 'string' ? text : (text == null ? '' : String(text));
+  if (!s) return 0;
+  let cjk = 0;
+  let rest = 0;
+  for (const ch of s) {
+    const c = ch.codePointAt(0);
+    if ((c >= 0x2e80 && c <= 0x9fff) || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfee0 && c <= 0xfefe) || (c >= 0xff00 && c <= 0xff60)) cjk++;
+    else rest++;
+  }
+  return Math.ceil(cjk + rest / 3.2);
+}
 export function formatTime(ts) {
   const d = new Date(ts);
   const now = new Date();

@@ -1,5 +1,5 @@
 /* DeepSeek Chatbox —— 主流程 */
-import { $, $$, h, uid, escapeHtml, formatBytes, formatTime, copyText, toast, compressImage, readAsText, download, debounce } from './util.js';
+import { $, $$, h, uid, escapeHtml, formatBytes, formatTime, copyText, toast, compressImage, readAsText, download, debounce, estimateTokens } from './util.js';
 import {
   settings, ui, meta as storeMeta, saveSettings, saveUI, allConversations, getConversation,
   createConversation, updateConversation, deleteConversation, saveConversations, groupConversations,
@@ -534,6 +534,7 @@ function renderChat() {
   syncTopbarTitle(conv);
   els.viewInner.replaceChildren();
   const list = conv ? visibleMessages(conv) : [];
+  updateCtxChip();
   if (!conv || !list.length) {
     els.viewInner.append(welcomeView());
     return;
@@ -947,7 +948,13 @@ function usageLine(m, costOv) {
         : '按消息发送时段的价格估算（空闲时段），发送后不再变动',
     }));
   }
-  return h('div', { class: 'msg-meta' }, nodes);
+  // 点整行打开用量面板（上下文用量 ↔ token 使用）
+  const meta = h('div', { class: 'msg-meta clickable', title: t('usageDetail') }, nodes);
+  meta.addEventListener('click', () => {
+    if (String(window.getSelection?.() || '').length) return;   // 正在选文字就不弹
+    openUsagePanel(meta);
+  });
+  return meta;
 }
 
 /**
@@ -1014,6 +1021,226 @@ function estimateCost(m) {
   const c = computeCost(m, m.createdAt);                 // 老消息按发送时刻回算
   return c ? { text: c.text, peak: c.peak, value: c.value } : null;
 }
+
+/* -------------------- 上下文用量面板（含两条滑条） -------------------- */
+
+/** token 数显示：<1000 原样，1 万以内 1 位小数 K，再往上取整 K，百万级 M */
+function fmtTok(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v < 1000) return String(v);
+  if (v < 10000) return (v / 1000).toFixed(1).replace(/\.0$/, '') + 'K';
+  if (v < 1048576) return Math.round(v / 1000) + 'K';
+  return (v / 1048576).toFixed(2).replace(/\.?0+$/, '') + 'M';
+}
+/** 窗口大小显示：一律整数 K / M（128K、1M） */
+function fmtWindow(n) {
+  const v = Math.max(0, Math.round(Number(n) || 0));
+  if (v >= 1048576) return (v / 1048576).toFixed(v % 1048576 ? 1 : 0).replace(/\.0$/, '') + 'M';
+  return Math.round(v / 1024) + 'K';       // 32K/64K 这类档位按 1024 进位，别显示成 33K
+}
+/** 一条消息的 token 粗估（正文 + 附件文本/文件名） */
+function msgTokens(m) {
+  let t = estimateTokens(typeof m.content === 'string' ? m.content : '');
+  for (const a of m.attachments || []) t += estimateTokens(a.text || a.name || '');
+  return t;
+}
+
+const CTX_STEPS_K = [32, 64, 128, 256, 512, 1024];
+const CTX_SEGS = [
+  ['sys', '系统提示', 'seg-sys'],
+  ['hist', '历史对话', 'seg-hist'],
+  ['input', '本轮输入', 'seg-input'],
+  ['tool', '工具结果', 'seg-tool'],
+];
+
+/** 汇总当前会话的上下文占用与 token 统计。
+ *  有最后一条 usage 时用它做精确锚点（prompt+completion），分段按比例缩放；否则全按估算。 */
+function convUsage() {
+  const conv = currentConversation();
+  const msgs = conv ? conv.messages : [];
+  const e = eff();
+  const modelMax = modelInfo(e.model).context_window || 1048576;
+  const limit = Number(settings.contextLimit) || 0;
+  const maxCtx = limit > 0 ? Math.min(limit, modelMax) : modelMax;
+
+  let anchorIdx = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const u = msgs[i].role === 'assistant' ? msgs[i].usage : null;
+    if (u && u.prompt_tokens) { anchorIdx = i; break; }
+  }
+  let lastUser = -1;
+  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user') { lastUser = i; break; }
+
+  const seg = { sys: estimateTokens(e.systemPrompt || '') + 160, hist: 0, input: 0, tool: 0 };
+  msgs.forEach((m, i) => {
+    const tk = msgTokens(m);
+    if (m.role === 'tool') seg.tool += tk;
+    else if (m.role === 'user') { if (i === lastUser) seg.input += tk; else seg.hist += tk; }
+    else seg.hist += tk;
+  });
+
+  let after = 0;
+  if (anchorIdx >= 0) for (let i = anchorIdx + 1; i < msgs.length; i++) after += msgTokens(msgs[i]);
+  const exact = anchorIdx >= 0;
+  const used = exact
+    ? (msgs[anchorIdx].usage.prompt_tokens || 0) + (msgs[anchorIdx].usage.completion_tokens || 0) + after
+    : seg.sys + seg.hist + seg.input + seg.tool;
+
+  const estSum = seg.sys + seg.hist + seg.input + seg.tool;
+  const scale = estSum > 0 ? used / estSum : 0;
+
+  const tok = { prompt: 0, completion: 0, hit: 0, miss: 0, think: 0, cost: 0, answers: 0, calls: 0 };
+  for (const m of msgs) {
+    if (m.role === 'assistant' && m.usage) {
+      const u = m.usage;
+      tok.answers++;
+      tok.prompt += u.prompt_tokens || 0;
+      tok.completion += u.completion_tokens || 0;
+      tok.hit += u.prompt_cache_hit_tokens || 0;
+      tok.miss += u.prompt_cache_miss_tokens || 0;
+      tok.think += u.completion_tokens_details?.reasoning_tokens || 0;
+      const c = estimateCost(m);
+      if (c) tok.cost += c.value || 0;
+    }
+    tok.calls += (m.toolCalls || []).length + (m.serverToolCalls || []).length;
+  }
+  tok.currency = settings.prices?.currency === 'USD' ? '$' : '¥';
+
+  return {
+    msgs, maxCtx, modelMax, limit, used, exact,
+    segs: CTX_SEGS.map(([key, label, cls]) => ({ key, label, cls, tokens: Math.round(seg[key] * scale) })),
+    tok,
+  };
+}
+
+/** 上下文用量面板：上面用量条，底下「总上下文上限」与「思考强度」两条滑条 */
+function openUsagePanel(anchor) {
+  if (state.menu && state.menuAnchor === anchor) { closeMenu(); return; }
+  const data = convUsage();
+
+  const pct = data.maxCtx ? Math.min(100, (data.used / data.maxCtx) * 100) : 0;
+  const pctEl = h('b', { class: 'usage-pct', text: pct.toFixed(pct >= 10 ? 0 : 1) + '%' });
+  const usedEl = h('span', { class: 'usage-used', text: `已使用 ${fmtTok(data.used)} / ${fmtWindow(data.maxCtx)}` });
+  const barEl = h('div', { class: 'usage-bar' });
+  const legendEl = h('div', { class: 'usage-legend' });
+  const ctxLabel = h('div', { class: 'usage-slider-label' });
+  const effortLabel = h('div', { class: 'usage-slider-label' });
+  const hintEl = h('div', { class: 'usage-hint' });
+
+  // 上限滑条：最后一档 = 模型默认（存 0）
+  const stepsK = CTX_STEPS_K.slice();
+  const modelK = Math.max(1, Math.round(data.modelMax / 1024));
+  if (!stepsK.includes(modelK)) stepsK.push(modelK);
+  stepsK.sort((a, b) => a - b);
+  const curK = Math.round((data.limit > 0 ? data.limit : data.modelMax) / 1024);
+  const ctxRange = h('input', {
+    class: 'usage-range', type: 'range', min: '0', max: String(stepsK.length - 1), step: '1',
+    value: String(Math.max(0, stepsK.indexOf(curK))), 'aria-label': '总上下文上限',
+  });
+
+  const EFFORTS = ['low', 'high', 'max'];
+  const effNames = { low: t('effortLow'), high: t('effortHigh'), max: t('effortMax') };
+  let effIdx = Math.max(0, EFFORTS.indexOf(eff().effort || 'high'));
+  const effortRange = h('input', {
+    class: 'usage-range', type: 'range', min: '0', max: '2', step: '1',
+    value: String(effIdx), 'aria-label': t('reasoningEffort'),
+  });
+
+  function paint() {
+    const d = convUsage();
+    const p = d.maxCtx ? Math.min(100, (d.used / d.maxCtx) * 100) : 0;
+    pctEl.textContent = p.toFixed(p >= 10 ? 0 : 1) + '%';
+    usedEl.textContent = `已使用 ${fmtTok(d.used)} / ${fmtWindow(d.maxCtx)}`;
+    barEl.replaceChildren(...d.segs.map((s) => {
+      const w = d.maxCtx ? Math.max(0, (s.tokens / d.maxCtx) * 100) : 0;
+      const el = h('i', { class: 'usage-seg ' + s.cls });
+      el.style.width = w > 0 ? Math.max(w, 0.6) + '%' : '0%';
+      el.title = `${s.label} 约 ${fmtTok(s.tokens)} tokens`;
+      return el;
+    }));
+    legendEl.replaceChildren(...d.segs.map((s) => {
+      const share = d.used ? Math.round((s.tokens / d.used) * 100) : 0;
+      return h('div', { class: 'usage-legend-row' }, [
+        h('i', { class: 'usage-dot ' + s.cls }),
+        h('span', { class: 'lbl', text: s.label }),
+        h('span', { class: 'val', text: fmtTok(s.tokens) }),
+        h('span', { class: 'pct', text: share + '%' }),
+      ]);
+    }));
+    const k = stepsK[Number(ctxRange.value)] || modelK;
+    ctxLabel.textContent = `${fmtWindow(k * 1024)} 上下文 · ${k >= modelK ? '默认' : '自定义'}`;
+    hintEl.textContent = d.limit
+      ? '超出上限的旧对话会在发送时按整轮截断'
+      : '默认使用模型完整窗口，不做截断';
+    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[EFFORTS[Number(effortRange.value)] || 'high']}`;
+  }
+
+  ctxRange.addEventListener('input', () => {
+    const k = stepsK[Number(ctxRange.value)] || modelK;
+    ctxLabel.textContent = `${fmtWindow(k * 1024)} 上下文 · ${k >= modelK ? '默认' : '自定义'}`;
+  });
+  ctxRange.addEventListener('change', () => {
+    const k = stepsK[Number(ctxRange.value)] || modelK;
+    saveSettings({ contextLimit: k >= modelK ? 0 : k * 1024 });
+    paint();
+    updateCtxChip(true);
+  });
+  effortRange.addEventListener('input', () => {
+    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[EFFORTS[Number(effortRange.value)] || 'high']}`;
+  });
+  effortRange.addEventListener('change', () => {
+    const lv = EFFORTS[Number(effortRange.value)] || 'high';
+    setEffective('effort', lv);
+    effortLabel.textContent = `${t('reasoningEffort')} · ${effNames[lv]}`;
+  });
+
+  const closeBtn = h('button', { class: 'icon-btn sm', type: 'button', title: '关闭', 'aria-label': '关闭' }, [iconEl('i-x')]);
+  closeBtn.addEventListener('click', () => closeMenu());
+
+  const panel = h('div', { class: 'usage-panel' }, [
+    h('div', { class: 'usage-head' }, [h('span', { class: 'usage-title', text: '上下文用量' }), closeBtn]),
+    h('div', { class: 'usage-top' }, [pctEl, usedEl]),
+    barEl,
+    legendEl,
+    h('div', { class: 'usage-sep' }),
+    ctxLabel,
+    ctxRange,
+    hintEl,
+    effortLabel,
+    effortRange,
+    h('div', { class: 'usage-foot', text: `本会话 输入 ${fmtTok(data.tok.prompt)} · 输出 ${fmtTok(data.tok.completion)} · 预估 ${data.tok.currency}${data.tok.cost.toFixed(data.tok.cost < 0.01 ? 4 : 2)}` }),
+  ]);
+  paint();                       // 先填内容再定位：否则面板会长高、把底边顶出视口
+  showMenu(anchor, [panel], 'up');
+  if (!eff().thinking) {
+    effortRange.disabled = true;
+    effortLabel.textContent = `${t('reasoningEffort')} · 深度思考已关闭`;
+  }
+}
+
+/** 输入框下方那颗「上下文 xx / yy」小胶囊，点开就是用量面板 */
+let ctxChipAt = 0;
+function mountCtxChip() {
+  if (els.ctxChip || !els.foot) return;
+  const btn = h('button', { class: 'ctx-chip hidden', type: 'button', title: '上下文用量' });
+  btn.addEventListener('click', () => openUsagePanel(btn));
+  els.foot.append(btn);
+  els.ctxChip = btn;
+  updateCtxChip(true);
+}
+function updateCtxChip(force = false) {
+  if (!els.ctxChip) return;
+  const now = Date.now();
+  if (!force && now - ctxChipAt < 500) return;   // 流式渲染很频繁，半秒最多算一次
+  ctxChipAt = now;
+  const d = convUsage();
+  const on = d.used > 0 && d.msgs.length > 0;
+  els.ctxChip.classList.toggle('hidden', !on);
+  if (!on) return;
+  const pct = d.maxCtx ? Math.min(100, (d.used / d.maxCtx) * 100) : 0;
+  els.ctxChip.textContent = `上下文 ${fmtTok(d.used)} / ${fmtWindow(d.maxCtx)} · ${pct.toFixed(pct >= 10 ? 0 : 1)}%`;
+}
+
 
 /** 合并多轮「纯工具」往返的用量，输出一行统计（token 求和、费用相加） */
 function usageLineMerged(msgs) {
@@ -1415,6 +1642,7 @@ async function streamRound({ assistant, payload }) {
           case 'usage':
             assistant.usage = ev.usage;
             stampCost(assistant, true);   // 发送时刻定档，之后不再漂
+            updateCtxChip(true);
             break;
           case 'finish':
             assistant.finishReason = ev.reason;
@@ -2530,6 +2758,7 @@ async function boot() {
   const narrow = window.innerWidth <= 900;
   els.app.classList.toggle('sidebar-collapsed', narrow ? true : Boolean(ui.sidebarCollapsed));
   wire();
+  mountCtxChip();
   renderSidebar();
   renderChat();
   autoGrow();

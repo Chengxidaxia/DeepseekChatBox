@@ -43,6 +43,8 @@ export const DEFAULT_SETTINGS = {
   },
   // 计价时段：auto 按北京时间自动判断；idle / peak 强制
   peakMode: 'auto',
+  // 上下文上限（tokens）：0 = 用模型默认窗口；设小了发请求前会按整轮裁掉最早的历史
+  contextLimit: 0,
   hasKey: false,
   keyPreview: '',
 };
