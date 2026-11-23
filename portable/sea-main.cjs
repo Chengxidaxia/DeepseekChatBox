@@ -83,6 +83,9 @@ function serveStatic(req, res, pathname) {
   let buf = readAsset(rel);
   let ext = path.extname(rel).toLowerCase();
   if (!buf) {
+    // 带扩展名的资源缺失时直接 404，不要回落 index.html
+    // （否则 favicon.ico 会拿到 HTML 字节，标签页图标变成花屏）
+    if (ext) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); return res.end('not found'); }
     buf = readAsset('index.html');
     ext = '.html';
   }

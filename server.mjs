@@ -127,6 +127,13 @@ function serveStatic(req, res, pathname) {
   if (!target.startsWith(PUBLIC_DIR)) return sendJson(res, 403, { error: 'forbidden' });
   fs.stat(target, (err, st) => {
     if (err || !st.isFile()) {
+      // 带扩展名的请求（favicon.ico / *.png / *.js …）一律 404：
+      // 以前统一回落 index.html，浏览器会把 HTML 字节当图标解码，标签页就显示一堆花屏
+      const ext = path.extname(rel).toLowerCase();
+      if (ext) {
+        res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end('not found');
+      }
       const idx = path.join(PUBLIC_DIR, 'index.html');
       fs.readFile(idx, (e2, buf) => {
         if (e2) return sendJson(res, 404, { error: 'not found' });
