@@ -3,18 +3,21 @@ chcp 65001 >nul
 setlocal
 cd /d "%~dp0"
 
-rem ---- locate Node.js: PATH first, then common install locations ----
-set "NODE_EXE=node"
-where node >nul 2>nul
-if errorlevel 1 (
-  set "NODE_EXE="
+rem ---- locate Node.js: bundled node.exe first, then PATH, then common locations ----
+set "NODE_EXE="
+if exist "%~dp0node.exe" set "NODE_EXE=%~dp0node.exe"
+if not defined NODE_EXE (
+  where node >nul 2>nul
+  if not errorlevel 1 set "NODE_EXE=node"
+)
+if not defined NODE_EXE (
   if exist "%ProgramFiles%\nodejs\node.exe" set "NODE_EXE=%ProgramFiles%\nodejs\node.exe"
   if exist "%LocalAppData%\Programs\nodejs\node.exe" set "NODE_EXE=%LocalAppData%\Programs\nodejs\node.exe"
-  if not defined NODE_EXE (
-    echo [ERROR] Node.js not found. Install Node 18 or newer, or add node.exe to PATH.
-    pause
-    exit /b 1
-  )
+)
+if not defined NODE_EXE (
+  echo [ERROR] Node.js not found. Install Node 18 or newer.
+  pause
+  exit /b 1
 )
 
 echo ==================================================
