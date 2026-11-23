@@ -491,6 +491,14 @@ const TOOL_META = { web_search: ['联网搜索', 'i-globe'], fetch_url: ['读取
 const toolGroupOpen = new Set();
 const toolRowOpen = new Set();
 
+/* 一次提问最多允许「模型请求工具 → 本地执行 → 再请求」的轮数。
+   用尽后不再静默中断，而是告诉模型收尾（禁用工具，只让它基于已有结果作答）。 */
+const MAX_TOOL_ROUNDS = 10;
+const TOOL_LIMIT_NOTE = (n) => `【系统提示】本次提问中，「请求工具 → 看结果 → 再请求」的往返轮次已经用满（上限 ${n} 轮，`
+  + '每轮可以同时调用多个工具），工具通道现已关闭，不能再发起任何工具调用。'
+  + '请立即基于上面已经拿到的工具结果直接回答用户；'
+  + '如果信息确实不足，就说明已经尝试过什么、还缺什么，不要编造。';
+
 /** 把一条消息里的本地工具调用整理成可渲染的描述（参数 + 结果 + 耗时） */
 function collectToolCalls(m) {
   const conv = currentConversation();
@@ -969,14 +977,16 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
   state.streaming = true;
   state.controller = new AbortController();
   updateComposerState();
+  window.__toolLimitHit = false;
 
   let cur = assistant;
   let curHistory = history;
   let first = true;
   let rounds = 0;
+  let limitHit = false; // 工具轮次用尽时置位，收尾要让模型基于已有结果作答
 
   try {
-    while (rounds++ < 5) {
+    while (rounds++ < MAX_TOOL_ROUNDS) {
       // 工具按需加载：用最近的用户问题检索工具；把历史里已调用过的工具带上，避免多轮断链
       const lastUser = [...curHistory].reverse().find((m) => m.role === 'user');
       const toolQuery = [lastUser?.content || '', ...(lastUser?.attachments || []).map((a) => a.text || '')].join(' ');
@@ -1011,6 +1021,8 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
 
       const toolCalls = await streamRound({ assistant: cur, payload });
       if (!toolCalls.length) break;
+      // 这是最后一轮了，但模型还想调工具：执行完就告诉它收尾
+      if (rounds >= MAX_TOOL_ROUNDS) limitHit = true;
 
       // ---- 执行模型请求的工具（服务端） ----
       cur.toolResults = cur.toolResults || [];
@@ -1046,6 +1058,32 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
       state.controller = new AbortController();
       updateComposerState();
       renderChat();
+    }
+
+    // ---- 工具轮次用尽：不再静默中断，明确告诉模型「不能再调工具，直接回答」 ----
+    if (limitHit) {
+      const { payload } = buildPayload(curHistory, {
+        settings: es,
+        stream: settings.stream,
+        extraTools,           // 仅用于让 buildPayload 知道有哪些工具，下面会把 tools 删掉
+        toolQuery: '',
+      });
+      // 关掉工具：模型即便想继续调也无从发起，这一轮只能出正文
+      delete payload.tools;
+      delete payload.tool_choice;
+      const note = TOOL_LIMIT_NOTE(MAX_TOOL_ROUNDS);
+      if (payload.messages?.[0]?.role === 'system') {
+        payload.messages[0] = {
+          ...payload.messages[0],
+          content: `${payload.messages[0].content}\n\n${note}`,
+        };
+      } else {
+        payload.messages.unshift({ role: 'system', content: note });
+      }
+      window.__lastPayload = payload;
+      window.__toolLimitHit = true;
+      toast(t('toolLimitHit', { n: MAX_TOOL_ROUNDS }));
+      await streamRound({ assistant: cur, payload });
     }
   } catch (err) {
     if (err.name === 'AbortError') {
