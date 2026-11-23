@@ -30,6 +30,9 @@ const state = {
   recording: null,
   searchQuery: '',
   menu: null,
+  menuOnClose: null,
+  menuAnchor: null,   // 当前菜单的锚点，用来判断「再点一次同一个按钮 = 收起」
+  selection: null,   // Set<convId>：非 null 即处于多选态
 };
 
 /** 当前会话的生效设置（全局 ← 分组 ← 会话） */
@@ -81,6 +84,15 @@ const els = {
   chatSearchInput: $('#chatSearchInput'),
   scrim: $('#scrim'),
   mic: $('#btnMic'),
+  selectHead: $('#selectHead'),
+  selectCount: $('#selectCount'),
+  bulkBar: $('#bulkBar'),
+  bulkAll: $('#bulkAllBox'),
+  bulkTotal: $('#bulkTotal'),
+  bulkPin: $('#btnBulkPin'),
+  bulkDelete: $('#btnBulkDelete'),
+  bulkExportBtn: $('#btnBulkExport'),
+  newChatBtn: $('#btnNewChat'),
 };
 
 /* ------------------------------ 主题 / 语言 ------------------------------ */
@@ -123,6 +135,7 @@ function renderSidebar() {
   const list = state.searchQuery ? searchConversations(state.searchQuery) : allConversations();
   els.chatList.replaceChildren();
   syncTopbarTitle(currentConversation());
+  syncSelectionUI(list);
 
   const groups = allGroups();
   const collapsed = new Set(ui.collapsedGroups || []);
@@ -144,7 +157,16 @@ function renderSidebar() {
   const label = (k) => (k === '__pinned' ? t('pinned') : k === '__today' ? t('today') : k === '__week' ? t('week') : k === '__month' ? t('month') : k.replace('-', '年') + '月');
   for (const g of groupConversations(rest)) {
     const wrap = h('div', { class: 'chat-group' });
-    wrap.append(h('div', { class: 'chat-group-title', text: label(g.key) }));
+    const title = h('div', { class: 'chat-group-title' }, [
+      h('span', { class: 'name', text: label(g.key) }),
+    ]);
+    // 官方分组行右侧有「多选」按钮（悬停显形），点了进入该组的批量选择
+    if (g.items.length) {
+      const bulk = h('button', { class: 'icon-btn sm group-bulk', type: 'button', title: t('multiSelect') }, [iconEl('i-multiselect')]);
+      bulk.addEventListener('click', (e) => { e.stopPropagation(); enterSelection(null); });
+      title.append(bulk);
+    }
+    wrap.append(title);
     for (const c of g.items) wrap.append(convRow(c));
     els.chatList.append(wrap);
   }
@@ -211,26 +233,61 @@ function groupSection(g, items, isCollapsed) {
 }
 
 function convRow(c) {
-  const row = h('div', { class: 'chat-item' + (c.id === state.currentId ? ' active' : ''), 'data-id': c.id });
-  if (c.pinned) row.append(iconEl('i-pin', 'pin-mark'));
-  if (hasCustomScope(c)) row.append(iconEl('i-settings', 'pin-mark'));
-  row.append(h('span', { class: 'title', text: convTitle(c), title: convTitle(c) }));
+  const selecting = !!state.selection;
+  const checked = selecting && state.selection.has(c.id);
+  const row = h('div', {
+    class: 'chat-item' + (c.id === state.currentId ? ' active' : '') + (selecting ? ' selectable' : '') + (checked ? ' checked' : ''),
+    'data-id': c.id,
+  });
 
-  const actions = h('div', { class: 'row-actions' });
-  const mk = (iconId, title, fn) => {
-    const b = h('button', { class: 'icon-btn sm', type: 'button', title, onclick: (e) => { e.stopPropagation(); fn(e); } }, [iconEl(iconId)]);
+  if (selecting) row.append(h('span', { class: 'cbx' }, [iconEl('i-check')]));
+
+  const title = h('span', { class: 'title', text: convTitle(c), title: convTitle(c) });
+  if (hasCustomScope(c)) title.append(h('span', { class: 'scope-dot', title: '该对话使用自定义设置' }));
+  row.append(title);
+
+  if (!selecting) {
+    const mask = h('div', { class: 'row-mask' });
+    const more = h('button', { class: 'icon-btn', type: 'button', title: t('more'), 'aria-label': t('more') }, [iconEl('i-more')]);
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // 同一个「…」再点一次 = 收起（开关式），不要重开
+      if (state.menu && state.menuAnchor === more) { closeMenu(); return; }
+      row.classList.add('menu-open');
+      rowMenu(c, more, () => row.classList.remove('menu-open'));
+    });
+    mask.append(more);
+    row.append(mask);
+  }
+
+  row.addEventListener('click', () => {
+    if (state.selection) { toggleSelection(c.id); return; }
+    if (state.searchQuery) { state.searchQuery = ''; els.searchWrap.classList.add('hidden'); els.chatSearchInput.value = ''; }
+    openConversation(c.id);
+  });
+  return row;
+}
+
+/* 行尾「…」菜单：对齐官方（重命名 / 置顶 / 多选 / 删除），额外的分组项放中间 */
+function rowMenu(c, anchor, onClose) {
+  const mk = (iconId, text, fn, extra = '') => {
+    const b = h('button', { class: 'menu-item' + extra, type: 'button' }, [iconEl(iconId), h('span', { text })]);
+    b.addEventListener('click', () => { closeMenu(); fn(); });
     return b;
   };
-  actions.append(
-    mk('i-folder', '移动到分组', (e) => moveMenu(c, e.currentTarget)),
-    mk('i-pin', c.pinned ? t('unpin') : t('pin'), () => { updateConversation(c.id, { pinned: !c.pinned }); renderSidebar(); }),
-    mk('i-edit', t('rename'), () => renameConversation(c)),
-    mk('i-trash', t('del'), () => removeConversation(c)),
-  );
-  row.append(actions);
-
-  row.addEventListener('click', () => { if (state.searchQuery) { state.searchQuery = ''; els.searchWrap.classList.add('hidden'); els.chatSearchInput.value = ''; } openConversation(c.id); });
-  return row;
+  const items = [
+    mk('i-edit', t('rename'), () => { renameConversation(c); }),
+    mk(c.pinned ? 'i-pin-off' : 'i-pin', c.pinned ? t('unpin') : t('pin'), () => {
+      updateConversation(c.id, { pinned: !c.pinned });
+      renderSidebar();
+    }),
+    mk('i-folder', t('moveGroup'), () => { setTimeout(() => moveMenu(c, anchor), 0); }),
+    h('div', { class: 'menu-sep' }),
+    mk('i-multiselect', t('multiSelect'), () => { enterSelection(c.id); }),
+    mk('i-trash', t('del'), () => { removeConversation(c); }, ' danger'),
+  ];
+  showMenu(anchor, items, 'down');
+  state.menuOnClose = onClose || null;
 }
 
 function moveMenu(conv, anchor) {
@@ -305,6 +362,112 @@ async function removeConversation(c) {
   renderSidebar();
 }
 
+/* ------------------------------ 多选（批量） ------------------------------ */
+function enterSelection(firstId) {
+  closeMenu();
+  state.selection = new Set(firstId ? [firstId] : []);
+  renderSidebar();
+}
+
+function exitSelection() {
+  state.selection = null;
+  renderSidebar();
+}
+
+function toggleSelection(id) {
+  const set = state.selection;
+  if (!set) return;
+  if (set.has(id)) set.delete(id); else set.add(id);
+  renderSidebar();
+}
+
+/** 同步多选态 UI：头部文案、底栏、按钮可用性、勾选框 */
+function syncSelectionUI(list) {
+  const on = !!state.selection;
+  els.app.classList.toggle('multi', on);
+  els.bulkBar.classList.toggle('hidden', !on);
+  els.selectHead.classList.toggle('hidden', !on);
+  els.newChatBtn?.classList.toggle('hidden', on);
+  if (!on) {
+    els.selectCount.textContent = t('selectChats');
+    return;
+  }
+  const n = state.selection.size;
+  els.selectCount.textContent = n ? t('selectedCount', { n }) : t('selectChats');
+  const total = (list || allConversations()).length;
+  els.bulkTotal.textContent = t('totalChats', { n: total });
+  els.bulkPin.disabled = !n;
+  els.bulkDelete.disabled = !n;
+  const allPinned = n > 0 && [...state.selection].every((id) => getConversation(id)?.pinned);
+  els.bulkPin.querySelector('span').textContent = allPinned ? t('unpin') : t('pin');
+  els.bulkPin.querySelector('use').setAttribute('href', allPinned ? '#i-pin-off' : '#i-pin');
+  els.bulkAll.classList.toggle('on', n > 0 && n >= total);
+  els.bulkAll.classList.toggle('partial', n > 0 && n < total);
+  els.bulkExportBtn.disabled = !n;
+}
+
+function bulkPinSelected() {
+  const set = state.selection;
+  if (!set?.size) return;
+  const allPinned = [...set].every((id) => getConversation(id)?.pinned);
+  for (const id of set) updateConversation(id, { pinned: !allPinned });
+  toast(allPinned ? t('unpin') : t('pin'));
+  renderSidebar();
+}
+
+async function bulkDeleteSelected() {
+  const set = state.selection;
+  if (!set?.size) return;
+  const n = set.size;
+  const ok = await appConfirm({
+    title: t('del'),
+    message: `删除选中的 ${n} 个对话？此操作不可恢复。`,
+    okText: t('del'),
+    danger: true,
+  });
+  if (!ok) return;
+  const ids = [...set];
+  for (const id of ids) deleteConversation(id);
+  if (ids.includes(state.currentId)) {
+    state.currentId = null;
+    renderChat();
+  }
+  state.selection = null;
+  renderSidebar();
+  toast(`已删除 ${n} 个对话`);
+}
+
+function bulkExportSelected() {
+  const set = state.selection;
+  if (!set?.size) return;
+  const convs = [...set].map((id) => getConversation(id)).filter(Boolean);
+  if (convs.length === 1) { exportConversation(convs[0].id); return; }
+  const lines = [`# DeepSeek Chatbox 对话导出`, '', `> 导出时间：${new Date().toLocaleString()}　共 ${convs.length} 个对话`, ''];
+  for (const c of convs) {
+    lines.push(`---`, '', `# ${convTitle(c)}`, '');
+    for (const m of c.messages) {
+      if (m.role === 'user') {
+        lines.push('## 你', '', m.content || '', '');
+      } else {
+        lines.push('## DeepSeek', '');
+        if (m.reasoning) lines.push('<details><summary>思考过程</summary>', '', m.reasoning, '', '</details>', '');
+        lines.push(m.content || '', '');
+      }
+    }
+    lines.push('');
+  }
+  download(`deepseek-chatbox-${convs.length}chats-${new Date().toISOString().slice(0, 10)}.md`, lines.join('\n'), 'text/markdown');
+}
+
+function bulkToggleAll() {
+  const list = state.searchQuery ? searchConversations(state.searchQuery) : allConversations();
+  const set = state.selection;
+  if (!set) return;
+  if (set.size >= list.length) set.clear();
+  else for (const c of list) set.add(c.id);
+  renderSidebar();
+}
+
 /* ------------------------------ 会话视图 ------------------------------ */
 function openConversation(id) {
   if (state.streaming) stopStreaming();
@@ -315,6 +478,7 @@ function openConversation(id) {
 }
 
 function newChat() {
+  if (state.selection) exitSelection();
   if (state.streaming) stopStreaming();
   state.currentId = null;
   state.attachments = [];
@@ -1825,9 +1989,15 @@ function wireCiteCards(root) {
 function closeMenu() {
   state.menu?.remove();
   state.menu = null;
+  state.menuAnchor = null;
   if (state.menuOff) {
     document.removeEventListener('mousedown', state.menuOff);
     state.menuOff = null;
+  }
+  if (state.menuOnClose) {
+    const fn = state.menuOnClose;
+    state.menuOnClose = null;
+    try { fn(); } catch { /* 清理回调失败不影响主流程 */ }
   }
 }
 function showMenu(anchor, content, placement = 'down') {
@@ -1865,6 +2035,7 @@ function showMenu(anchor, content, placement = 'down') {
   pop.style.visibility = '';
 
   state.menu = pop;
+  state.menuAnchor = anchor;
   setTimeout(() => {
     // 换菜单时旧监听已由 closeMenu 清掉，这里保证同一时刻只有一个
     const off = (e) => {
@@ -2133,6 +2304,13 @@ function wire() {
 
   $('#btnNewChat').addEventListener('click', newChat);
   $('#btnNewChatTop').addEventListener('click', newChat);
+  // 多选：退出 / 取消 / 全选 / 批量置顶 / 批量删除 / 批量导出
+  $('#btnSelectExit').addEventListener('click', exitSelection);
+  $('#btnSelectCancel').addEventListener('click', exitSelection);
+  $('#bulkAllLabel').addEventListener('click', (e) => { e.preventDefault(); bulkToggleAll(); });
+  $('#btnBulkPin').addEventListener('click', bulkPinSelected);
+  $('#btnBulkDelete').addEventListener('click', () => { void bulkDeleteSelected(); });
+  $('#btnBulkExport').addEventListener('click', bulkExportSelected);
   $('#btnSearchChats').addEventListener('click', toggleSearchPanel);
   $('#btnSearchChats2').addEventListener('click', toggleSearchPanel);
   els.chatSearchInput.addEventListener('input', debounce(() => {
@@ -2214,6 +2392,7 @@ function wire() {
     }
     if (e.key === 'Escape') {
       closeMenu();
+      if (state.selection) { exitSelection(); return; }
       if (state.streaming) stopStreaming();
     }
   });
