@@ -60,7 +60,7 @@ function lanAddresses(limit = 2) {
   return out.sort((x, y) => rank(x) - rank(y)).slice(0, limit);
 }
 
-const tools = createTools({ store, log });
+const tools = createTools({ store, log, dataDir: DATA_DIR });
 const lan = LAN_OPEN && !NO_AUTH ? createLan({ dataDir: DATA_DIR, log }) : null;
 
 const MIME = {

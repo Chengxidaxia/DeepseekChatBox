@@ -10,8 +10,11 @@
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const dns = require('node:dns');
+const fs = require('node:fs');
 const net = require('node:net');
 const os = require('node:os');
+const path = require('node:path');
+const zlib = require('node:zlib');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const MAX_HTML_BYTES = 4 * 1024 * 1024;
@@ -445,6 +448,330 @@ function evalArithmetic(raw) {
 }
 
 /** cmd.exe 在中文 Windows 输出 GBK，UTF-8 环境又可能吐 UTF-8：按替换字符多少自动选 */
+/* ---------------------------------------------------------------------------
+ * QR 编码（byte 模式，版本 1-10）+ PNG 编码：自研实现，零第三方依赖。
+ * 表数据取自 ISO/IEC 18004 附录；实现已与 qrcode-generator(MIT) 逐模块比对通过。
+ * ------------------------------------------------------------------------- */
+const QR_RS_BLOCK = [
+  [1, 26, 19], [1, 26, 16], [1, 26, 13], [1, 26, 9],
+  [1, 44, 34], [1, 44, 28], [1, 44, 22], [1, 44, 16],
+  [1, 70, 55], [1, 70, 44], [2, 35, 17], [2, 35, 13],
+  [1, 100, 80], [2, 50, 32], [2, 50, 24], [4, 25, 9],
+  [1, 134, 108], [2, 67, 43], [2, 33, 15, 2, 34, 16], [2, 33, 11, 2, 34, 12],
+  [2, 86, 68], [4, 43, 27], [4, 43, 19], [4, 43, 15],
+  [2, 98, 78], [4, 49, 31], [2, 32, 14, 4, 33, 15], [4, 39, 13, 1, 40, 14],
+  [2, 121, 97], [2, 60, 38, 2, 61, 39], [4, 40, 18, 2, 41, 19], [4, 40, 14, 2, 41, 15],
+  [2, 146, 116], [3, 58, 36, 2, 59, 37], [4, 36, 16, 4, 37, 17], [4, 36, 12, 4, 37, 13],
+  [2, 86, 68, 2, 87, 69], [4, 69, 43, 1, 70, 44], [6, 43, 19, 2, 44, 20], [6, 43, 15, 2, 44, 16],
+];
+const QR_ALIGN = [[], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+const QR_EC_INDEX = { L: 0, M: 1, Q: 2, H: 3 };
+const QR_EC_BITS = { L: 1, M: 0, Q: 3, H: 2 };
+
+const QR_EXP = new Array(512);
+const QR_LOG = new Array(256);
+(function qrInitGF() {
+  let x = 1;
+  for (let i = 0; i < 255; i++) { QR_EXP[i] = x; QR_LOG[x] = i; x <<= 1; if (x & 0x100) x ^= 0x11d; }
+  for (let i = 255; i < 512; i++) QR_EXP[i] = QR_EXP[i - 255];
+})();
+const qrMul = (a, b) => (a === 0 || b === 0 ? 0 : QR_EXP[QR_LOG[a] + QR_LOG[b]]);
+
+function qrBlocks(version, level) {
+  const raw = QR_RS_BLOCK[(version - 1) * 4 + QR_EC_INDEX[level]];
+  const out = [];
+  for (let i = 0; i < raw.length; i += 3) {
+    for (let k = 0; k < raw[i]; k++) out.push({ total: raw[i + 1], data: raw[i + 2], ec: raw[i + 1] - raw[i + 2] });
+  }
+  return out;
+}
+
+function qrGenPoly(n) {
+  let poly = [1];
+  for (let i = 0; i < n; i++) {
+    const next = new Array(poly.length + 1).fill(0);
+    for (let j = 0; j < poly.length; j++) { next[j] ^= poly[j]; next[j + 1] ^= qrMul(poly[j], QR_EXP[i]); }
+    poly = next;
+  }
+  return poly;
+}
+
+function qrReedSolomon(data, ecLen) {
+  const gen = qrGenPoly(ecLen);
+  const res = new Array(ecLen).fill(0);
+  for (const byte of data) {
+    const factor = byte ^ res[0];
+    res.shift(); res.push(0);
+    if (factor !== 0) for (let i = 0; i < ecLen; i++) res[i] ^= qrMul(gen[i + 1], factor);
+  }
+  return res;
+}
+
+function qrCodewords(bytes, version, level) {
+  const blocks = qrBlocks(version, level);
+  const totalData = blocks.reduce((s, b) => s + b.data, 0);
+  const bits = [];
+  const push = (val, len) => { for (let i = len - 1; i >= 0; i--) bits.push((val >> i) & 1); };
+  push(0b0100, 4);
+  push(bytes.length, version <= 9 ? 8 : 16);
+  for (const b of bytes) push(b, 8);
+  const cap = totalData * 8;
+  for (let i = 0; i < 4 && bits.length < cap; i++) bits.push(0);
+  while (bits.length % 8) bits.push(0);
+  const words = [];
+  for (let i = 0; i < bits.length; i += 8) {
+    let v = 0;
+    for (let j = 0; j < 8; j++) v = (v << 1) | bits[i + j];
+    words.push(v);
+  }
+  const PAD = [0xec, 0x11];
+  for (let i = 0; words.length < totalData; i++) words.push(PAD[i % 2]);
+
+  const dataBlocks = [];
+  const ecBlocks = [];
+  let p = 0;
+  for (const b of blocks) { const d = words.slice(p, p + b.data); p += b.data; dataBlocks.push(d); ecBlocks.push(qrReedSolomon(d, b.ec)); }
+  const out = [];
+  const maxData = Math.max(...blocks.map((b) => b.data));
+  for (let i = 0; i < maxData; i++) for (const d of dataBlocks) if (i < d.length) out.push(d[i]);
+  const maxEc = Math.max(...blocks.map((b) => b.ec));
+  for (let i = 0; i < maxEc; i++) for (const e of ecBlocks) if (i < e.length) out.push(e[i]);
+  return out;
+}
+
+const QR_MASKS = [
+  (r, c) => (r + c) % 2 === 0,
+  (r) => r % 2 === 0,
+  (r, c) => c % 3 === 0,
+  (r, c) => (r + c) % 3 === 0,
+  (r, c) => (Math.floor(r / 2) + Math.floor(c / 3)) % 2 === 0,
+  (r, c) => ((r * c) % 2) + ((r * c) % 3) === 0,
+  (r, c) => (((r * c) % 2) + ((r * c) % 3)) % 2 === 0,
+  (r, c) => (((r * c) % 3) + ((r + c) % 2)) % 2 === 0,
+];
+
+const QR_G15 = (1 << 10) | (1 << 8) | (1 << 5) | (1 << 4) | (1 << 2) | (1 << 1) | 1;
+const QR_G18 = (1 << 12) | (1 << 11) | (1 << 10) | (1 << 9) | (1 << 8) | (1 << 5) | (1 << 2) | 1;
+const QR_G15_MASK = (1 << 14) | (1 << 12) | (1 << 10) | (1 << 4) | (1 << 1);
+const qrBitLen = (d) => { let n = 0; while (d !== 0) { n++; d >>>= 1; } return n; };
+function qrBchInfo(data) {
+  let d = data << 10;
+  while (qrBitLen(d) - qrBitLen(QR_G15) >= 0) d ^= QR_G15 << (qrBitLen(d) - qrBitLen(QR_G15));
+  return ((data << 10) | d) ^ QR_G15_MASK;
+}
+function qrBchVersion(data) {
+  let d = data << 12;
+  while (qrBitLen(d) - qrBitLen(QR_G18) >= 0) d ^= QR_G18 << (qrBitLen(d) - qrBitLen(QR_G18));
+  return (data << 12) | d;
+}
+
+function qrBuildMatrix(version, codewords, level, mask, writeMeta) {
+  const size = version * 4 + 17;
+  const m = Array.from({ length: size }, () => new Array(size).fill(null));
+  const fn = Array.from({ length: size }, () => new Array(size).fill(false));
+  const set = (r, c, v) => { m[r][c] = v; fn[r][c] = true; };
+
+  const finder = (r0, c0) => {
+    for (let r = -1; r <= 7; r++) {
+      for (let c = -1; c <= 7; c++) {
+        const rr = r0 + r, cc = c0 + c;
+        if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+        const dark = (r >= 0 && r <= 6 && (c === 0 || c === 6))
+          || (c >= 0 && c <= 6 && (r === 0 || r === 6))
+          || (r >= 2 && r <= 4 && c >= 2 && c <= 4);
+        set(rr, cc, dark);
+      }
+    }
+  };
+  finder(0, 0); finder(0, size - 7); finder(size - 7, 0);
+
+  for (let i = 8; i < size - 8; i++) { set(6, i, i % 2 === 0); set(i, 6, i % 2 === 0); }
+
+  const pos = QR_ALIGN[version - 1];
+  const inFinder = (r, c) => (r <= 8 && c <= 8) || (r <= 8 && c >= size - 8) || (r >= size - 8 && c <= 8);
+  for (const r0 of pos) {
+    for (const c0 of pos) {
+      if (inFinder(r0, c0)) continue;
+      for (let r = -2; r <= 2; r++) {
+        for (let c = -2; c <= 2; c++) set(r0 + r, c0 + c, Math.max(Math.abs(r), Math.abs(c)) !== 1);
+      }
+    }
+  }
+
+  // 格式信息占位（候选阶段留白，与常见实现的掩码评分保持一致）
+  const bits = writeMeta ? qrBchInfo((QR_EC_BITS[level] << 3) | mask) : 0;
+  for (let i = 0; i < 15; i++) {
+    const bit = writeMeta && ((bits >> i) & 1) === 1;
+    const r = i < 6 ? i : (i < 8 ? i + 1 : size - 15 + i);
+    set(r, 8, bit);
+    const c = i < 8 ? size - i - 1 : (i < 9 ? 15 - i : 14 - i);
+    set(8, c, bit);
+  }
+  set(size - 8, 8, writeMeta);
+
+  if (version >= 7) {
+    const vbits = writeMeta ? qrBchVersion(version) : 0;
+    for (let i = 0; i < 18; i++) {
+      const bit = writeMeta && ((vbits >> i) & 1) === 1;
+      set(Math.floor(i / 3), (i % 3) + size - 11, bit);
+      set((i % 3) + size - 11, Math.floor(i / 3), bit);
+    }
+  }
+
+  const totalBits = codewords.length * 8;
+  let idx = 0, dir = -1, row = size - 1;
+  for (let col = size - 1; col > 0; col -= 2) {
+    if (col === 6) col--;
+    for (;;) {
+      for (let k = 0; k < 2; k++) {
+        const cc = col - k;
+        if (m[row][cc] === null) {
+          let bit = 0;
+          if (idx < totalBits) { bit = (codewords[idx >> 3] >> (7 - (idx & 7))) & 1; idx++; }
+          m[row][cc] = bit === 1;
+        }
+      }
+      row += dir;
+      if (row < 0 || row >= size) { row -= dir; dir = -dir; break; }
+    }
+  }
+
+  const maskFn = QR_MASKS[mask];
+  for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (!fn[r][c] && maskFn(r, c)) m[r][c] = !m[r][c];
+  return { matrix: m, size };
+}
+
+function qrLostPoint(matrix, size) {
+  const dark = (r, c) => matrix[r][c] === true;
+  let lost = 0;
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size; c++) {
+      let same = 0;
+      for (let dr = -1; dr <= 1; dr++) {
+        for (let dc = -1; dc <= 1; dc++) {
+          if (dr === 0 && dc === 0) continue;
+          const rr = r + dr, cc = c + dc;
+          if (rr < 0 || cc < 0 || rr >= size || cc >= size) continue;
+          if (dark(r, c) === dark(rr, cc)) same++;
+        }
+      }
+      if (same > 5) lost += 3 + same - 5;
+    }
+  }
+  for (let r = 0; r < size - 1; r++) {
+    for (let c = 0; c < size - 1; c++) {
+      const n = Number(dark(r, c)) + Number(dark(r + 1, c)) + Number(dark(r, c + 1)) + Number(dark(r + 1, c + 1));
+      if (n === 0 || n === 4) lost += 3;
+    }
+  }
+  for (let r = 0; r < size; r++) {
+    for (let c = 0; c < size - 6; c++) {
+      if (dark(r, c) && !dark(r, c + 1) && dark(r, c + 2) && dark(r, c + 3) && dark(r, c + 4) && !dark(r, c + 5) && dark(r, c + 6)) lost += 40;
+    }
+  }
+  for (let c = 0; c < size; c++) {
+    for (let r = 0; r < size - 6; r++) {
+      if (dark(r, c) && !dark(r + 1, c) && dark(r + 2, c) && dark(r + 3, c) && dark(r + 4, c) && !dark(r + 5, c) && dark(r + 6, c)) lost += 40;
+    }
+  }
+  let darkCount = 0;
+  for (let r = 0; r < size; r++) for (let c = 0; c < size; c++) if (dark(r, c)) darkCount++;
+  lost += (Math.abs((100 * darkCount) / size / size - 50) / 5) * 10;
+  return lost;
+}
+
+/** 生成二维码模块矩阵：byte 模式，自动选版本（1-10）与最优掩码 */
+function qrMatrix(text, level = 'M') {
+  const bytes = [...Buffer.from(String(text), 'utf8')];
+  let version = 0;
+  for (version = 1; version <= 10; version++) {
+    const totalData = qrBlocks(version, level).reduce((s, b) => s + b.data, 0);
+    if (4 + (version <= 9 ? 8 : 16) + bytes.length * 8 <= totalData * 8) break;
+  }
+  if (version > 10) throw new Error('内容过长：QR 上限约 270 字节（版本 10）。请缩短文本，或改用别的短链接');
+  const cw = qrCodewords(bytes, version, level);
+  let best = null;
+  for (let mask = 0; mask < 8; mask++) {
+    const probe = qrBuildMatrix(version, cw, level, mask, false);
+    const score = qrLostPoint(probe.matrix, probe.size);
+    if (!best || score < best.score) best = { score, mask };
+  }
+  const final = qrBuildMatrix(version, cw, level, best.mask, true);
+  return { version, mask: best.mask, size: final.size, matrix: final.matrix };
+}
+
+const QR_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function qrCrc32(buf) {
+  let c = 0xffffffff;
+  for (const b of buf) c = QR_CRC[(c ^ b) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+function pngChunk(type, data) {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(data.length, 0);
+  const body = Buffer.concat([Buffer.from(type, 'ascii'), data]);
+  const crc = Buffer.alloc(4);
+  crc.writeUInt32BE(qrCrc32(body), 0);
+  return Buffer.concat([len, body, crc]);
+}
+
+/** 矩阵 → 8bit 灰度 PNG（黑 0 / 白 255，默认四周留 4 模块静区） */
+function qrPng(matrix, scale = 8, border = 4) {
+  const n = matrix.length;
+  const dim = (n + border * 2) * scale;
+  const raw = Buffer.alloc((dim + 1) * dim, 255);
+  for (let y = 0; y < dim; y++) raw[y * (dim + 1)] = 0; // filter: none
+  for (let r = 0; r < n; r++) {
+    for (let c = 0; c < n; c++) {
+      if (matrix[r][c] !== true) continue;
+      const px0 = (c + border) * scale;
+      const py0 = (r + border) * scale;
+      for (let dy = 0; dy < scale; dy++) {
+        const off = (py0 + dy) * (dim + 1) + 1 + px0;
+        raw.fill(0, off, off + scale);
+      }
+    }
+  }
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(dim, 0);
+  ihdr.writeUInt32BE(dim, 4);
+  ihdr[8] = 8;   // bit depth
+  ihdr[9] = 0;   // grayscale
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', ihdr),
+    pngChunk('IDAT', zlib.deflateSync(raw, { level: 9 })),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+/** 矩阵 → 终端字符画（每个模块 2 字符宽，含 2 模块静区） */
+function qrAscii(matrix, border = 2) {
+  const n = matrix.length;
+  const lines = [];
+  const pad = '  '.repeat(border);
+  const blank = `${pad}${'  '.repeat(n)}${pad}`;
+  for (let i = 0; i < border; i++) lines.push(blank);
+  for (let r = 0; r < n; r++) {
+    let line = pad;
+    for (let c = 0; c < n; c++) line += matrix[r][c] ? '██' : '  ';
+    lines.push(line + pad);
+  }
+  for (let i = 0; i < border; i++) lines.push(blank);
+  return lines.join('\n');
+}
+
 function decodeCmdOutput(buf) {
   if (!buf.length) return '';
   let utf8 = '', gbk = '';
@@ -541,6 +868,12 @@ const FIND_TOOL_KEYS = {
   timestamp_convert: ['时间戳', 'timestamp', 'unix时间', '毫秒转', '秒转日期'],
   json_minify: ['压缩json', 'json压缩', 'json一行'],
   token_count: ['多少token', 'token数', '分词', '计费token', 'token消耗'],
+  qr_text: ['二维码', 'qr', '扫码', '生成二维码', '二维码图片'],
+  stat_calc: ['统计', '平均值', '均值', '中位数', '标准差', '方差', '分位数', '异常值', '算一下平均'],
+  hex_view: ['十六进制', 'hex', 'hexdump', '字节查看', '二进制查看', 'xxd', '转hex'],
+  color_convert: ['颜色转换', '色值', 'hex颜色', 'rgb转', 'hsl', '对比度', '配色', '颜色代码'],
+  text_kit: ['去重', '排序', '清洗文本', '清理空行', '加前缀', '拆列', '命名风格', '驼峰', '下划线命名', 'case转换'],
+  aes_crypto: ['aes', '加解密', '对称加密', 'encrypt', 'decrypt', 'cbc', 'gcm', '加密参数', '解密密文'],
   cmd_run: ['执行命令', 'cmd', '运行命令', '本机命令'],
 };
 
@@ -569,7 +902,7 @@ function searchToolDefs(defs, query, topK = 5) {
   return scored.slice(0, topK);
 }
 
-function createTools({ store, upstream = 'https://api.deepseek.com', log = console.log }) {
+function createTools({ store, upstream = 'https://api.deepseek.com', log = console.log, dataDir = '' }) {
   const definitions = [
     {
       type: 'function',
@@ -1065,6 +1398,121 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
             detail: { type: 'boolean', description: '是否返回 token id 与片段列表，默认 false' },
           },
           required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'qr_text',
+        description: '把文本或网址生成二维码，保存成本机 PNG 图片并返回文件路径与尺寸；也可以返回终端字符画。用户要生成二维码、让手机扫码打开链接时用（内容上限约 270 字节）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: '要编码的内容，一般是网址或短文本' },
+            level: { type: 'string', enum: ['L', 'M', 'Q', 'H'], description: '纠错等级，默认 M（越高越抗污损，容量越小）' },
+            scale: { type: 'integer', description: '每个模块的像素数，默认 8，范围 2-20' },
+            ascii: { type: 'boolean', description: '是否同时返回终端字符画二维码，默认 false' },
+            filename: { type: 'string', description: '文件名（不含扩展名），默认按时间生成' },
+          },
+          required: ['text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'stat_calc',
+        description: '对一串数字做统计：个数、总和、均值、中位数、众数、最值、极差、方差与标准差（样本/总体）、四分位数与 IQR、异常值。用户要算平均值、波动、分位数、找离群点时用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            numbers: { type: 'string', description: '数字列表，用逗号/空格/换行分隔，如 "12, 15, 9, 22"' },
+            precision: { type: 'integer', description: '保留几位小数，默认 4，最大 10' },
+          },
+          required: ['numbers'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'hex_view',
+        description: '十六进制查看与还原：toHex 把文本转成带偏移和 ASCII 侧栏的 hex dump；fromHex 把十六进制串（支持空格、0x、逗号分隔）还原成文本。用户要看字节、读二进制残留、还原 hex 串时用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            mode: { type: 'string', enum: ['toHex', 'fromHex'], description: 'toHex=文本转十六进制；fromHex=十六进制还原文本' },
+            text: { type: 'string', description: '输入内容' },
+            bytes_per_line: { type: 'integer', description: '每行字节数，默认 16，传 0 表示不分行' },
+          },
+          required: ['mode', 'text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'color_convert',
+        description: '颜色格式互转与对比度计算：输入 #RRGGBB、rgb()、hsl() 或 color 名称，输出 HEX、RGB、HSL、HSV、相对亮度、与白/黑的 WCAG 对比度，并判断偏深还是偏浅。用户调色、检查文字可读性时用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            color: { type: 'string', description: '颜色，如 #1e90ff、rgb(30,144,255)、hsl(210,100%,56%)' },
+            background: { type: 'string', description: '可选：再算一个与背景色的对比度，如 #ffffff' },
+          },
+          required: ['color'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'text_kit',
+        description: '文本批量处理工具箱：dedupe 去重、sort 排序（字典/数字/长度）、trim 清理空行与多余空白、wrap 加前后缀、split 按分隔符拆行、case 命名风格转换（camel/snake/kebab/pascal/const/upper/lower/title）。用户要整理名单、清洗数据、改命名风格时用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['dedupe', 'sort', 'trim', 'wrap', 'split', 'case'], description: '要做的处理' },
+            text: { type: 'string', description: '输入文本（按行处理）' },
+            ignore_case: { type: 'boolean', description: '去重/排序时忽略大小写，默认 false' },
+            desc: { type: 'boolean', description: '排序是否倒序，默认 false' },
+            numeric: { type: 'boolean', description: '排序是否按数值大小，默认 false' },
+            prefix: { type: 'string', description: 'wrap 时给每行加的前缀' },
+            suffix: { type: 'string', description: 'wrap 时给每行加的后缀' },
+            delimiter: { type: 'string', description: 'split 的分隔符，默认按换行' },
+            case_type: { type: 'string', enum: ['camel', 'snake', 'kebab', 'pascal', 'const', 'upper', 'lower', 'title'], description: 'case 动作的目标风格' },
+          },
+          required: ['action', 'text'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'aes_crypto',
+        description: 'AES 对称加解密（CBC/GCM/ECB）：支持 hex/base64 编码的 key 与 iv，GCM 会返回 auth tag。用户要解接口加密参数、复现前端加密结果、校验对称加解密时用。key 长度必须是 16/24/32 字节（128/192/256 位）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            action: { type: 'string', enum: ['encrypt', 'decrypt'], description: '加密或解密' },
+            text: { type: 'string', description: '明文（encrypt）或密文（decrypt）' },
+            key: { type: 'string', description: '密钥，按 key_encoding 解释' },
+            mode: { type: 'string', enum: ['cbc', 'gcm', 'ecb'], description: '工作模式，默认 cbc' },
+            iv: { type: 'string', description: '初始向量，CBC/GCM 必填（GCM 一般 12 字节，CBC 16 字节）' },
+            tag: { type: 'string', description: 'GCM 解密时的 auth tag，按 input_encoding 解释' },
+            key_encoding: { type: 'string', enum: ['utf8', 'hex', 'base64'], description: 'key 的编码，默认 utf8' },
+            iv_encoding: { type: 'string', enum: ['utf8', 'hex', 'base64'], description: 'iv 的编码，默认 utf8' },
+            input_encoding: { type: 'string', enum: ['utf8', 'hex', 'base64'], description: 'decrypt 时密文/tag 的编码，默认 base64' },
+            output_encoding: { type: 'string', enum: ['base64', 'hex'], description: 'encrypt 时输出的编码，默认 base64' },
+          },
+          required: ['action', 'text', 'key'],
           additionalProperties: false,
         },
       },
@@ -1896,6 +2344,373 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
         text: `找到 ${hits.length} 个相关工具（名字：${names.join(', ')}）：\n\n${lines.join('\n\n')}\n\n这些工具已在下一轮自动可用，直接按参数调用即可。`,
         data: { names, tools: hits.map((h) => h.def.function) },
       };
+    },
+
+    async qr_text(args = {}) {
+      const text = String(args.text ?? '').trim();
+      if (!text) return { ok: false, text: '缺少 text 参数。' };
+      const lv = String(args.level || 'M').toUpperCase();
+      const level = ['L', 'M', 'Q', 'H'].includes(lv) ? lv : 'M';
+      const scale = Math.min(20, Math.max(2, Number(args.scale) || 8));
+      let qr;
+      try { qr = qrMatrix(text, level); } catch (e) { return { ok: false, text: e.message }; }
+      let file = '';
+      try {
+        const base = path.join(dataDir || os.tmpdir(), 'qr');
+        const name = String(args.filename || '').replace(/[^\w.-]+/g, '_').slice(0, 40) || `qr-${Date.now()}`;
+        file = path.join(base, name.replace(/\.png$/i, '') + '.png');
+        fs.mkdirSync(base, { recursive: true });
+        fs.writeFileSync(file, qrPng(qr.matrix, scale));
+      } catch (e) {
+        file = '';
+      }
+      const shown = text.length > 160 ? text.slice(0, 160) + '…' : text;
+      const lines = [];
+      if (file) lines.push(`二维码已保存：${file}`);
+      else lines.push('（图片写入失败，已改为只输出字符画）');
+      lines.push(`内容：${shown}`);
+      lines.push(`规格：版本 ${qr.version}，${qr.size}×${qr.size} 模块，纠错 ${level}，掩码 ${qr.mask}，${scale}px/模块`);
+      if (args.ascii || !file) lines.push('', qrAscii(qr.matrix));
+      return {
+        ok: true,
+        text: lines.join('\n'),
+        data: { path: file, version: qr.version, size: qr.size, level, mask: qr.mask, scale, ascii: qrAscii(qr.matrix) },
+      };
+    },
+
+    async stat_calc(args = {}) {
+      const raw = String(args.numbers ?? '').trim();
+      if (!raw) return { ok: false, text: '缺少 numbers 参数。' };
+      const parts = raw.split(/[\s,;，；、|]+/).filter(Boolean);
+      const nums = [];
+      for (const p of parts) {
+        const n = Number(String(p).replace(/[¥$€£,:]/g, '').replace(/%$/, ''));
+        if (!Number.isFinite(n)) return { ok: false, text: `「${p}」不是有效数字，请只用数字和分隔符。` };
+        nums.push(n);
+      }
+      if (!nums.length) return { ok: false, text: '没有解析到数字。' };
+      const p = Math.min(10, Math.max(0, Number(args.precision) || 4));
+      const fix = (x) => (Number.isFinite(x) ? Number(x.toFixed(p)) : x);
+      const n = nums.length;
+      const sorted = [...nums].sort((a, b) => a - b);
+      const sum = nums.reduce((a, b) => a + b, 0);
+      const mean = sum / n;
+      const medianOf = (arr) => (arr.length % 2 ? arr[(arr.length - 1) / 2] : (arr[arr.length / 2 - 1] + arr[arr.length / 2]) / 2);
+      const median = medianOf(sorted);
+      const half = Math.floor(n / 2);
+      const q1 = medianOf(sorted.slice(0, half));
+      const q3 = medianOf(sorted.slice(n % 2 ? half + 1 : half));
+      const iqr = q3 - q1;
+      const dev = nums.map((x) => x - mean);
+      const varPop = dev.reduce((s, d) => s + d * d, 0) / n;
+      const varSample = n > 1 ? dev.reduce((s, d) => s + d * d, 0) / (n - 1) : 0;
+      const freq = new Map();
+      for (const x of nums) freq.set(x, (freq.get(x) || 0) + 1);
+      const maxFreq = Math.max(...freq.values());
+      const modes = maxFreq > 1 ? [...freq.entries()].filter(([, c]) => c === maxFreq).map(([v]) => v) : [];
+      const lo = sorted[0], hi = sorted[n - 1];
+      const outLow = q1 - 1.5 * iqr;
+      const outHigh = q3 + 1.5 * iqr;
+      const outliers = sorted.filter((x) => x < outLow || x > outHigh);
+      const lines = [
+        `个数 ${n}`,
+        `总和 ${fix(sum)}`,
+        `均值 ${fix(mean)}`,
+        `中位数 ${fix(median)}`,
+        `众数 ${modes.length ? modes.map(fix).join(', ') : '无重复值'}`,
+        `最小 ${fix(lo)}　最大 ${fix(hi)}　极差 ${fix(hi - lo)}`,
+        `方差 样本 ${fix(varSample)}　总体 ${fix(varPop)}`,
+        `标准差 样本 ${fix(Math.sqrt(varSample))}　总体 ${fix(Math.sqrt(varPop))}`,
+        `四分位 Q1 ${fix(q1)}　Q3 ${fix(q3)}　IQR ${fix(iqr)}`,
+        `异常值(1.5×IQR) ${outliers.length ? outliers.map(fix).join(', ') : '无'}`,
+      ];
+      return {
+        ok: true,
+        text: lines.join('\n'),
+        data: { count: n, sum: fix(sum), mean: fix(mean), median: fix(median), modes, min: fix(lo), max: fix(hi), varianceSample: fix(varSample), variancePop: fix(varPop), stdSample: fix(Math.sqrt(varSample)), stdPop: fix(Math.sqrt(varPop)), q1: fix(q1), q3: fix(q3), iqr: fix(iqr), outliers },
+      };
+    },
+
+    async hex_view(args = {}) {
+      const mode = String(args.mode || '').toLowerCase();
+      const raw = String(args.text ?? '');
+      if (!raw) return { ok: false, text: '缺少 text 参数。' };
+      const per = args.bytes_per_line === 0 ? 0 : Math.min(64, Math.max(1, Number(args.bytes_per_line) || 16));
+      if (mode === 'tohex') {
+        const buf = Buffer.from(raw, 'utf8');
+        const lines = [];
+        const width = per || buf.length || 1;
+        for (let off = 0; off < buf.length; off += width) {
+          const chunk = buf.subarray(off, off + width);
+          const hex = [...chunk].map((b) => b.toString(16).padStart(2, '0')).join(' ');
+          const asc = [...chunk].map((b) => (b >= 0x20 && b < 0x7f ? String.fromCharCode(b) : '.')).join('');
+          lines.push(per ? `${off.toString(16).padStart(8, '0')}  ${hex.padEnd(per * 3 - 1)}  |${asc}|` : hex);
+        }
+        return { ok: true, text: lines.join('\n') || '（空）', data: { bytes: buf.length, hex: buf.toString('hex') } };
+      }
+      if (mode === 'fromhex') {
+        const clean = raw.replace(/0x|\\x|[\s,;:|]/gi, '');
+        if (!/^[0-9a-f]*$/i.test(clean)) return { ok: false, text: '含有非十六进制字符，请检查输入（只允许 0-9 a-f 和分隔符）。' };
+        if (clean.length % 2) return { ok: false, text: `十六进制长度为奇数（${clean.length} 位），可能少了半字节。` };
+        const buf = Buffer.from(clean, 'hex');
+        const text = buf.toString('utf8');
+        const bad = (text.match(/\ufffd/g) || []).length;
+        const note = bad ? `\n（含 ${bad} 个无法按 UTF-8 解码的字节，可能是二进制或 GBK 编码；原文另存为 base64：${buf.toString('base64').slice(0, 60)}…）` : '';
+        return { ok: true, text: text + note, data: { bytes: buf.length, base64: buf.toString('base64'), utf8Errors: bad } };
+      }
+      return { ok: false, text: 'mode 只能是 toHex 或 fromHex。' };
+    },
+
+    async color_convert(args = {}) {
+      const parseColor = (input) => {
+        const s = String(input || '').trim();
+        if (!s) return null;
+        let m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(s);
+        if (m) {
+          let hex = m[1];
+          if (hex.length === 3) hex = hex.split('').map((c) => c + c).join('');
+          return { r: parseInt(hex.slice(0, 2), 16), g: parseInt(hex.slice(2, 4), 16), b: parseInt(hex.slice(4, 6), 16), alpha: 1 };
+        }
+        m = /^rgba?\(([^)]+)\)$/i.exec(s);
+        if (m) {
+          const p = m[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+          if (p.length >= 3 && p.slice(0, 3).every((x) => Number.isFinite(x))) {
+            return { r: p[0], g: p[1], b: p[2], alpha: p[3] ?? 1 };
+          }
+        }
+        m = /^hsla?\(([^)]+)\)$/i.exec(s);
+        if (m) {
+          const p = m[1].split(/[\s,/]+/).filter(Boolean);
+          const h = parseFloat(p[0]);
+          const sat = parseFloat(p[1]) / 100;
+          const li = parseFloat(p[2]) / 100;
+          if ([h, sat, li].every((x) => Number.isFinite(x))) {
+            const k = (n) => (n + h / 30) % 12;
+            const a = sat * Math.min(li, 1 - li);
+            const f = (n) => li - a * Math.max(-1, Math.min(k(n) - 3, Math.min(9 - k(n), 1)));
+            return { r: Math.round(f(0) * 255), g: Math.round(f(8) * 255), b: Math.round(f(4) * 255), alpha: p[3] ? parseFloat(p[3]) : 1 };
+          }
+        }
+        const NAMED = { red: '#f00', green: '#008000', blue: '#00f', black: '#000', white: '#fff', gray: '#808080', grey: '#808080', orange: '#ffa500', yellow: '#ff0', purple: '#800080', pink: '#ffc0cb' };
+        if (NAMED[s.toLowerCase()]) return parseColor(NAMED[s.toLowerCase()]);
+        return null;
+      };
+
+      const toHsl = ({ r, g, b }) => {
+        const rr = r / 255, gg = g / 255, bb = b / 255;
+        const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+        const l = (max + min) / 2;
+        let h = 0, s = 0;
+        if (max !== min) {
+          const d = max - min;
+          s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+          if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
+          else if (max === gg) h = ((bb - rr) / d + 2) / 6;
+          else h = ((rr - gg) / d + 4) / 6;
+        }
+        return { h: Math.round(h * 360), s: Math.round(s * 100), l: Math.round(l * 100) };
+      };
+      const toHsv = ({ r, g, b }) => {
+        const rr = r / 255, gg = g / 255, bb = b / 255;
+        const max = Math.max(rr, gg, bb), min = Math.min(rr, gg, bb);
+        const d = max - min;
+        let h = 0;
+        if (d !== 0) {
+          if (max === rr) h = ((gg - bb) / d + (gg < bb ? 6 : 0)) / 6;
+          else if (max === gg) h = ((bb - rr) / d + 2) / 6;
+          else h = ((rr - gg) / d + 4) / 6;
+        }
+        return { h: Math.round(h * 360), s: Math.round((max === 0 ? 0 : d / max) * 100), v: Math.round(max * 100) };
+      };
+      const lum = ({ r, g, b }) => {
+        const f = (v) => {
+          const c = v / 255;
+          return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        };
+        return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+      };
+      const hexOf = ({ r, g, b }) => '#' + [r, g, b].map((v) => Math.max(0, Math.min(255, Math.round(v))).toString(16).padStart(2, '0')).join('').toUpperCase();
+      const contrast = (a, b) => {
+        const l1 = lum(a), l2 = lum(b);
+        return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+      };
+
+      const c = parseColor(args.color);
+      if (!c) return { ok: false, text: '无法识别颜色。支持 #RGB、#RRGGBB、rgb(r,g,b)、hsl(h,s%,l%) 以及少量英文色名。' };
+      const hsl = toHsl(c), hsv = toHsv(c);
+      const L = lum(c);
+      const white = { r: 255, g: 255, b: 255 }, black = { r: 0, g: 0, b: 0 };
+      const cw = contrast(c, white), cb = contrast(c, black);
+      const yiq = (0.299 * c.r + 0.587 * c.g + 0.114 * c.b) / 255;
+      const lines = [
+        `HEX ${hexOf(c)}`,
+        `RGB rgb(${c.r}, ${c.g}, ${c.b})`,
+        `HSL hsl(${hsl.h}, ${hsl.s}%, ${hsl.l}%)`,
+        `HSV hsv(${hsv.h}, ${hsv.s}%, ${hsv.v}%)`,
+        `相对亮度 ${L.toFixed(4)}`,
+        `对比度 对白 ${cw.toFixed(2)}:1　对黑 ${cb.toFixed(2)}:1`,
+        `明度(YIQ) ${Math.round(yiq * 100)}%　当这个颜色做底色时，建议用${yiq > 0.5 ? '黑色' : '白色'}文字`,
+        `WCAG 正文(4.5:1) 把它当文字色：白底${cw >= 4.5 ? '通过' : '不通过'} / 黑底${cb >= 4.5 ? '通过' : '不通过'}`,
+      ];
+      const data = { hex: hexOf(c), rgb: [c.r, c.g, c.b], hsl, hsv, luminance: Number(L.toFixed(4)), contrastWhite: Number(cw.toFixed(2)), contrastBlack: Number(cb.toFixed(2)), isDark: yiq <= 0.5, suggestedTextColor: yiq > 0.5 ? '#000000' : '#FFFFFF', yiq: Math.round(yiq * 100) };
+      if (args.background) {
+        const bg = parseColor(args.background);
+        if (!bg) return { ok: false, text: '背景色无法识别。' };
+        const cc = contrast(c, bg);
+        lines.push(`与背景 ${hexOf(bg)} 的对比度 ${cc.toFixed(2)}:1　正文 AA ${cc >= 4.5 ? '通过' : '不通过'}　AAA ${cc >= 7 ? '通过' : '不通过'}`);
+        data.contrastWithBackground = Number(cc.toFixed(2));
+      }
+      return { ok: true, text: lines.join('\n'), data };
+    },
+
+    async text_kit(args = {}) {
+      const action = String(args.action || '').toLowerCase();
+      const text = String(args.text ?? '');
+      if (!text) return { ok: false, text: '缺少 text 参数。' };
+      const lines = text.split(/\r?\n/);
+      const ic = args.ignore_case === true;
+
+      if (action === 'dedupe') {
+        const seen = new Set();
+        const out = [];
+        for (const line of lines) {
+          const key = ic ? line.trim().toLowerCase() : line.trim();
+          if (!key) { continue; }
+          if (seen.has(key)) continue;
+          seen.add(key);
+          out.push(line);
+        }
+        return { ok: true, text: out.join('\n'), data: { before: lines.filter((l) => l.trim()).length, after: out.length, removed: lines.filter((l) => l.trim()).length - out.length } };
+      }
+
+      if (action === 'sort') {
+        const rows = lines.filter((l) => l.trim());
+        const num = (s) => {
+          const v = Number(String(s).trim().replace(/,/g, ''));
+          return Number.isFinite(v) ? v : null;
+        };
+        rows.sort((a, b) => {
+          if (args.numeric) {
+            const na = num(a), nb = num(b);
+            if (na !== null && nb !== null) return na - nb;
+            if (na !== null) return -1;
+            if (nb !== null) return 1;
+          }
+          const ka = ic ? a.toLowerCase() : a;
+          const kb = ic ? b.toLowerCase() : b;
+          return ka < kb ? -1 : ka > kb ? 1 : 0;
+        });
+        if (args.desc) rows.reverse();
+        return { ok: true, text: rows.join('\n'), data: { count: rows.length } };
+      }
+
+      if (action === 'trim') {
+        const out = lines.map((l) => l.trim().replace(/[ \t]{2,}/g, ' ')).filter((l) => l);
+        return { ok: true, text: out.join('\n'), data: { before: lines.length, after: out.length, removed: lines.length - out.length } };
+      }
+
+      if (action === 'wrap') {
+        const pre = String(args.prefix ?? '');
+        const suf = String(args.suffix ?? '');
+        const out = lines.map((l) => pre + l + suf);
+        return { ok: true, text: out.join('\n'), data: { count: out.length } };
+      }
+
+      if (action === 'split') {
+        const d = args.delimiter === undefined || args.delimiter === '' ? null : String(args.delimiter);
+        const parts = d ? text.split(d) : lines;
+        const out = parts.map((p, i) => `${i + 1}. ${p.trim()}`).filter((x) => x.trim() !== '' && !/^\d+\.\s*$/.test(x));
+        return { ok: true, text: out.join('\n'), data: { count: out.length, delimiter: d || '换行' } };
+      }
+
+      if (action === 'case') {
+        const type = String(args.case_type || 'camel').toLowerCase();
+        const words = (s) => s
+          .replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2')   // HTTPResponse → HTTP Response
+          .replace(/([a-z0-9])([A-Z])/g, '$1 $2')      // userName → user Name
+          .replace(/[^\p{L}\p{N}]+/gu, ' ')
+          .trim().split(/\s+/).filter(Boolean);
+        const cap = (w) => (w ? w[0].toUpperCase() + w.slice(1) : '');
+        const convert = (s) => {
+          if (type === 'upper') return s.toUpperCase();
+          if (type === 'lower') return s.toLowerCase();
+          const ws = words(s);
+          if (!ws.length) return s;
+          switch (type) {
+            case 'camel': return ws[0].toLowerCase() + ws.slice(1).map(cap).join('');
+            case 'pascal': return ws.map(cap).join('');
+            case 'snake': return ws.map((w) => w.toLowerCase()).join('_');
+            case 'kebab': return ws.map((w) => w.toLowerCase()).join('-');
+            case 'const': return ws.map((w) => w.toUpperCase()).join('_');
+            case 'title': return ws.map(cap).join(' ');
+            default: return s;
+          }
+        };
+        const out = lines.map((l) => (l.trim() ? convert(l.trim()) : l));
+        return { ok: true, text: out.join('\n'), data: { type, count: out.length } };
+      }
+
+      return { ok: false, text: 'action 只支持 dedupe / sort / trim / wrap / split / case。' };
+    },
+
+    async aes_crypto(args = {}) {
+      const action = String(args.action || '').toLowerCase();
+      const mode = String(args.mode || 'cbc').toLowerCase();
+      if (!['encrypt', 'decrypt'].includes(action)) return { ok: false, text: 'action 只能是 encrypt 或 decrypt。' };
+      if (!['cbc', 'gcm', 'ecb'].includes(mode)) return { ok: false, text: 'mode 只能是 cbc / gcm / ecb。' };
+      const enc = (v, fallback) => (['utf8', 'hex', 'base64'].includes(String(v || '').toLowerCase()) ? String(v).toLowerCase() : fallback);
+      const toBuf = (v, encoding) => {
+        const s = String(v ?? '');
+        if (encoding === 'hex') return Buffer.from(s.replace(/0x|[\s:]/gi, ''), 'hex');
+        if (encoding === 'base64') return Buffer.from(s, 'base64');
+        return Buffer.from(s, 'utf8');
+      };
+      const key = toBuf(args.key, enc(args.key_encoding, 'utf8'));
+      if (![16, 24, 32].includes(key.length)) {
+        return { ok: false, text: `key 长度是 ${key.length} 字节，必须是 16/24/32 字节（128/192/256 位）。如果是十六进制字符串，请把 key_encoding 设为 hex。` };
+      }
+      const ivEnc = enc(args.iv_encoding, 'utf8');
+      const inEnc = enc(args.input_encoding, 'base64');
+      const outEnc = enc(args.output_encoding, 'base64');
+      const alg = `aes-${key.length * 8}-${mode}`;
+      try {
+        if (action === 'encrypt') {
+          const iv = mode === 'ecb' ? null : toBuf(args.iv, ivEnc);
+          if (mode !== 'ecb' && (!iv || !iv.length)) return { ok: false, text: 'CBC / GCM 需要 iv 参数。' };
+          const c = crypto.createCipheriv(alg, key, iv);
+          const body = Buffer.concat([c.update(Buffer.from(String(args.text ?? ''), 'utf8')), c.final()]);
+          const lines = [`模式 ${alg.toUpperCase()}`];
+          lines.push(`密文(${outEnc}) ${body.toString(outEnc)}`);
+          if (iv) lines.push(`iv(${ivEnc}) ${iv.toString('hex')}`);
+          if (mode === 'gcm') lines.push(`tag(base64) ${c.getAuthTag().toString('base64')}`);
+          return {
+            ok: true,
+            text: lines.join('\n'),
+            data: { mode: alg, ciphertext: body.toString(outEnc), iv: iv ? iv.toString('hex') : null, tag: mode === 'gcm' ? c.getAuthTag().toString('base64') : null, outputEncoding: outEnc },
+          };
+        }
+        const iv = mode === 'ecb' ? null : toBuf(args.iv, ivEnc);
+        if (mode !== 'ecb' && (!iv || !iv.length)) return { ok: false, text: 'CBC / GCM 需要 iv 参数。' };
+        const d = crypto.createDecipheriv(alg, key, iv);
+        if (mode === 'gcm') {
+          if (!args.tag) return { ok: false, text: 'GCM 解密需要 tag（auth tag）参数。' };
+          d.setAuthTag(toBuf(args.tag, inEnc));
+        }
+        const plain = Buffer.concat([d.update(toBuf(args.text, inEnc)), d.final()]);
+        const asText = plain.toString('utf8');
+        const bad = (asText.match(/\ufffd/g) || []).length;
+        return {
+          ok: true,
+          text: bad ? `${asText}\n\n（有 ${bad} 个字节不是合法 UTF-8，原文 hex：${plain.toString('hex').slice(0, 120)}）` : asText,
+          data: { mode: alg, bytes: plain.length, plaintext: asText, hex: plain.toString('hex') },
+        };
+      } catch (e) {
+        const msg = String(e.message || e);
+        if (/bad decrypt|unable to authenticate|wrong final block/i.test(msg)) {
+          return { ok: false, text: '解密失败：key / iv / 密文 / 编码方式不匹配，或密文被截断（' + msg + '）' };
+        }
+        return { ok: false, text: 'AES 处理失败：' + msg };
+      }
     },
 
     async cmd_run(args = {}) {

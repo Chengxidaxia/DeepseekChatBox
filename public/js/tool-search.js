@@ -46,6 +46,12 @@ const TOOL_KEYS = {
   timestamp_convert: ['时间戳', 'timestamp', 'unix时间', '毫秒转', '秒转日期', 'epoch'],
   json_minify: ['压缩json', 'json压缩', 'json一行', 'minify'],
   token_count: ['多少token', 'token数', '分词', 'tokenizer', '上下文长度', '计费token', 'token消耗'],
+  qr_text: ['二维码', 'qrcode', 'qr code', '扫码', '生成二维码', '二维码图片'],
+  stat_calc: ['统计', '平均值', '平均数', '均值', '中位数', '众数', '标准差', '方差', '分位数', '异常值', '离群值', 'statistics', 'average', 'median'],
+  hex_view: ['十六进制', 'hexdump', 'hex view', '字节查看', '看字节', '十六进制查看', 'hex串', '转hex', 'xxd', '二进制查看'],
+  color_convert: ['颜色转换', '色值', '颜色代码', 'rgb转', 'hsl', 'hex颜色', '对比度', 'wcag', '配色', 'color'],
+  text_kit: ['去重', '排序文本', '清洗文本', '清理空行', '去空行', '加前缀', '拆列', '命名风格', '驼峰', 'snake', 'kebab', 'case转换', '整理名单'],
+  aes_crypto: ['aes', '加解密', '对称加密', 'encrypt', 'decrypt', 'cbc', 'gcm', '加密参数', '解密密文', 'auth tag'],
   cmd_run: ['执行命令', 'cmd', '运行命令', '本机命令', '跑命令', 'powershell', 'shell'],
 };
 

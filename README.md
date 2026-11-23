@@ -31,6 +31,7 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 ├─ conversations.json   全部对话（含思考、引用、用量）
 ├─ ui.json              界面状态（侧栏收起等）
 ├─ attachments/         上传的图片（按 id 命名 + index.json）
+├─ qr/                  qr_text 生成的二维码 PNG（同名覆盖，可随手删）
 └─ backups/             对话自动备份，保留最近 10 份
 ```
 
@@ -218,12 +219,19 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 | `timestamp_convert` | 时间戳 ↔ 日期互转 | 秒/毫秒、时区偏移 |
 | `json_minify` | JSON 压缩成一行 | 返回节省字节数 |
 | `token_count` | **DeepSeek V4.1-Flash 分词器** | 本地精确算 token 数，可返回每个 token 的 id 与片段；离线、零费用 |
+| `qr_text` | **生成二维码（v1.10.0）** | 自研 QR 编码器（byte 模式，版本 1–10，L/M/Q/H），落盘为灰度 PNG 到 `data/qr/`，路径与规格一并返回；也可输出终端字符画 |
+| `stat_calc` | 数字统计 | 均值 / 中位数 / 众数 / 极差 / 样本与总体方差、标准差 / 四分位与 IQR / 1.5×IQR 异常值 |
+| `hex_view` | 十六进制查看与还原 | `toHex` 输出带偏移与 ASCII 侧栏的 hex dump；`fromHex` 容忍空格、`0x`、逗号分隔，非 UTF-8 时给 base64 |
+| `color_convert` | 颜色互转与对比度 | HEX / RGB / HSL / HSV、相对亮度、YIQ、对白/黑及自定义背景的 WCAG 对比度 |
+| `text_kit` | 文本批量处理 | 去重 / 排序（字典、数值、长度）/ 清理空行与空白 / 加前后缀 / 按分隔符拆行 / camel·snake·kebab·pascal·const·title 命名转换 |
+| `aes_crypto` | AES 对称加解密 | CBC / GCM / ECB，key 与 iv 支持 utf8·hex·base64，GCM 返回 auth tag；用于复现前端加密、解接口密文 |
 | `cmd_run` | **【危险】本机 cmd 执行命令** | 退出码 + stdout/stderr；默认关闭，见下 |
 
 - 工具定义由 `GET /api/tools/definitions` 下发，执行走 `POST /api/tools/call`，浏览器不接触 Key
 - 定义里的 `meta.web`（`search` / `fetch`）只用于前端区分「联网工具」与「本地工具」，发请求前会被剥掉；
   `meta.cmd` 用于前端按 `cmdEnabled` 开关过滤
-- **工具按需加载（搜索引擎）**：34 个工具如果每次全量声明，光定义就约 5360 tokens/轮。
+- **工具按需加载（搜索引擎）**：40 个工具如果每次全量声明，光定义就约 5610 tokens/轮
+  （新增这 6 个只多约 250 tokens，因为描述都控制在两行内）。
   现在用 `public/js/tool-search.js` 的 BM25 检索：工具名 + 强关键词 + 描述分词打分，
   每轮只下发与当前问题相关的工具（设置 → 生成 → 「工具按需加载」可选 4/8/16/全部）。
   实测「算 128×0.85」只下发 calculator（约 150 tokens，省 97%）；
