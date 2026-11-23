@@ -3,6 +3,7 @@
  *       再把变更 PATCH/PUT 回服务端（防抖合并，单机单用户足够）。
  */
 import { getHolidayCached } from './holiday.js';
+import { uuid } from './util.js';
 
 export const DEFAULT_SETTINGS = {
   baseUrl: 'https://api.deepseek.com',
@@ -335,6 +336,7 @@ export function createConversation(partial = {}) {
   const now = Date.now();
   const conv = {
     id: 'c_' + now.toString(36) + Math.random().toString(36).slice(2, 6),
+    uuid: uuid(),   // 分享链接用：/a/chat/s/<uuid>，与官方一致
     title: '',
     createdAt: now,
     updatedAt: now,
@@ -374,6 +376,7 @@ export function clearAllConversations() {
 export async function importConversations(list, mode = 'merge') {
   const incoming = (Array.isArray(list) ? list : []).filter((c) => c && Array.isArray(c.messages)).map((c) => ({
     id: c.id || 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    uuid: c.uuid || uuid(),
     title: c.title || '',
     createdAt: c.createdAt || Date.now(),
     updatedAt: c.updatedAt || Date.now(),

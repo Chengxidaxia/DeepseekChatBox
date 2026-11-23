@@ -29,6 +29,21 @@ export function h(tag, attrs = {}, children = []) {
 
 export const uid = (p = 'm') => p + '_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 
+/** 标准 UUID v4（会话分享链接用）。手机 LAN 走 http 非安全上下文，randomUUID 可能不可用，故自带回退。 */
+export function uuid() {
+  let bytes;
+  if (globalThis.crypto?.getRandomValues) {
+    bytes = globalThis.crypto.getRandomValues(new Uint8Array(16));
+  } else {
+    bytes = new Uint8Array(16);
+    for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+  }
+  bytes[6] = (bytes[6] & 0x0f) | 0x40;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const s = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+  return `${s.slice(0, 8)}-${s.slice(8, 12)}-${s.slice(12, 16)}-${s.slice(16, 20)}-${s.slice(20)}`;
+}
+
 export function escapeHtml(s = '') {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }

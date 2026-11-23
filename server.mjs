@@ -30,8 +30,19 @@ const DATA_DIR = path.resolve(argVal('--data-dir') || process.env.DATA_DIR || pa
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
 
+// 日志时间戳：本机时间 + 日期 + 时区偏移（ISO 8601 风格，避免 UTC 误读）
+function logStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  const off = -d.getTimezoneOffset();          // 东八区 = +480 分钟
+  const sign = off >= 0 ? '+' : '-';
+  const tz = sign + p(Math.floor(Math.abs(off) / 60)) + ':' + p(Math.abs(off) % 60);
+  return d.getFullYear() + '-' + p(d.getMonth() + 1) + '-' + p(d.getDate()) +
+    ' ' + p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + ' ' + tz;
+}
+
 function log(...a) {
-  console.log(new Date().toISOString().slice(11, 19), ...a);
+  console.log('[' + logStamp() + ']', ...a);
 }
 
 let store;

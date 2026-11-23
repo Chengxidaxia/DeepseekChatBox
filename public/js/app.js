@@ -1,5 +1,5 @@
 /* DeepSeek Chatbox —— 主流程 */
-import { $, $$, h, uid, escapeHtml, formatBytes, formatTime, copyText, toast, compressImage, readAsText, download, debounce, estimateTokens } from './util.js';
+import { $, $$, h, uid, uuid, escapeHtml, formatBytes, formatTime, copyText, toast, compressImage, readAsText, download, debounce, estimateTokens } from './util.js';
 import {
   settings, ui, meta as storeMeta, saveSettings, saveUI, allConversations, getConversation,
   createConversation, updateConversation, deleteConversation, saveConversations, groupConversations,
@@ -375,6 +375,7 @@ async function removeConversation(c) {
   deleteConversation(c.id);
   if (state.currentId === c.id) {
     state.currentId = null;
+    syncRoute();              // 当前会话被删，回根路径
     renderChat();
   }
   renderSidebar();
@@ -449,6 +450,7 @@ async function bulkDeleteSelected() {
   for (const id of ids) deleteConversation(id);
   if (ids.includes(state.currentId)) {
     state.currentId = null;
+    syncRoute();
     renderChat();
   }
   state.selection = null;
@@ -491,6 +493,7 @@ function bulkToggleAll() {
 function openConversation(id) {
   if (state.streaming) stopStreaming();
   state.currentId = id;
+  syncRoute(true);          // 切会话记一条历史，支持浏览器后退
   renderSidebar();
   renderChat();
   closeSidebarOnMobile();
@@ -500,6 +503,7 @@ function newChat() {
   if (state.selection) exitSelection();
   if (state.streaming) stopStreaming();
   state.currentId = null;
+  syncRoute(true);          // 新对话回根路径，记一条历史
   state.attachments = [];
   renderTray();
   els.prompt.value = '';
@@ -515,12 +519,66 @@ function currentConversation() {
   return state.currentId ? getConversation(state.currentId) : null;
 }
 
+const APP_TITLE = 'Deepseek ChatBox';
 /** 顶栏左端显示当前会话标题（官方 chat 的做法）；欢迎页没有标题就留空 */
 function syncTopbarTitle(conv) {
   if (!els.topbarTitle) return;
   const title = (conv && conv.title) || '';
   els.topbarTitle.textContent = title;
   els.topbarTitle.title = title;
+  // 网页标签：<会话标题> - Deepseek ChatBox；欢迎页用纯应用名
+  document.title = title ? `${title} - ${APP_TITLE}` : APP_TITLE;
+}
+
+/* ------------------------- 会话路由（官方风格 URL） ------------------------- */
+// 官方 chat：https://chat.deepseek.com/a/chat/s/<uuid>
+// 本地对应：http://127.0.0.1:17321/a/chat/s/<conv.uuid>
+const CHAT_PATH = '/a/chat/s/';
+let suppressPopRoute = false;   // popstate 恢复会话时抑制再次 push，避免历史栈打转
+
+/** 当前会话对应的分享路径；欢迎页回根路径 */
+function convPath(conv) {
+  if (!conv) return '/';
+  if (!conv.uuid) { conv.uuid = uuid(); saveConversations(); }  // 旧会话懒迁移
+  return CHAT_PATH + encodeURIComponent(conv.uuid);
+}
+
+/** 更新地址栏。push=true 记一条历史（切会话）；false=replace（首次打开/纠正 URL） */
+function syncRoute(push = false) {
+  if (suppressPopRoute) return;
+  const target = convPath(currentConversation());
+  const here = location.pathname;
+  if (here === target) return;
+  try {
+    // 保留 ?q= / ?demo= / ?fast= 这类一次性参数，不打断现有入口
+    history[push ? 'pushState' : 'replaceState']({ dsConv: state.currentId || null }, '', target + location.search);
+  } catch {}
+}
+
+/** 从地址栏解析出会话（按 uuid，兼容旧 id），找不到返回 null */
+function convFromRoute() {
+  const m = location.pathname.match(/^\/a\/chat\/s\/([^/]+)\/?$/);
+  if (!m) return null;
+  let key = m[1];
+  try { key = decodeURIComponent(key); } catch {}
+  return allConversations().find((c) => c.uuid === key || c.id === key) || null;
+}
+
+/** 浏览器前进/后退：按 URL 切会话，不写历史 */
+function applyRouteFromHistory() {
+  const conv = convFromRoute();
+  const id = conv ? conv.id : null;
+  if (id === state.currentId) return;
+  suppressPopRoute = true;
+  try {
+    if (state.streaming) stopStreaming();
+    state.currentId = id;
+    renderSidebar();
+    renderChat();
+    closeSidebarOnMobile();
+  } finally {
+    suppressPopRoute = false;
+  }
 }
 
 function ensureConversation() {  if (state.currentId && getConversation(state.currentId)) return getConversation(state.currentId);
@@ -1567,6 +1625,7 @@ async function sendMessage({ continueMode = false, prefix = '' } = {}) {
   if (!conv.title) conv.title = toPlainText(text).slice(0, 28) || '新对话';
 
   state.currentId = conv.id;
+  syncRoute();              // 首次发言建会话后，地址栏补上 /a/chat/s/<uuid>（replace，不占历史）
   renderSidebar();
   renderChat();
   scrollToBottom(true);
@@ -2928,6 +2987,7 @@ function wire() {
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') flushNow();
   });
+  window.addEventListener('popstate', applyRouteFromHistory);   // 前进/后退切会话
 }
 
 /* ------------------------------ 启动 ------------------------------ */
@@ -2964,9 +3024,19 @@ async function boot() {
   const narrow = window.innerWidth <= 900;
   els.app.classList.toggle('sidebar-collapsed', narrow ? true : Boolean(ui.sidebarCollapsed));
   wire();
+
+  // 官方风格深链：/a/chat/s/<uuid> 打开对应会话；无效 uuid 回欢迎页并纠正地址栏
+  const routed = convFromRoute();
+  if (routed) state.currentId = routed.id;
+  else if (location.pathname.startsWith(CHAT_PATH)) {
+    state.currentId = null;
+    syncRoute();            // 链接失效 → 纠正为根路径
+  }
+
   mountCtxChip();
   renderSidebar();
   renderChat();
+  syncRoute();              // 首屏规范地址栏：欢迎页=根路径；有会话=/a/chat/s/<uuid>
   autoGrow();
   updateComposerState();
 
