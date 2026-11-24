@@ -52,6 +52,7 @@ const TOOL_KEYS = {
   color_convert: ['颜色转换', '色值', '颜色代码', 'rgb转', 'hsl', 'hex颜色', '对比度', 'wcag', '配色', 'color'],
   text_kit: ['去重', '排序文本', '清洗文本', '清理空行', '去空行', '加前缀', '拆列', '命名风格', '驼峰', 'snake', 'kebab', 'case转换', '整理名单'],
   aes_crypto: ['aes', '加解密', '对称加密', 'encrypt', 'decrypt', 'cbc', 'gcm', '加密参数', '解密密文', 'auth tag'],
+  eval: ['浏览器', '执行js', '执行代码', '跑js', 'js脚本', 'console', '网页里执行', 'eval', 'javascript'],
   cmd_run: ['执行命令', 'cmd', '运行命令', '本机命令', '跑命令', 'powershell', 'shell'],
 };
 
@@ -148,6 +149,7 @@ export function pickTools(defs, query, {
   usedNames = [],       // 本对话已调用过的工具名
   enabled = true,       // localTools 总开关
   cmdEnabled = false,
+  evalEnabled = false,
 } = {}) {
   if (!enabled && !always.length) return { defs: [], names: [], hits: [] };
   const hits = enabled ? searchTools(defs, query, { topK }) : [];
@@ -158,11 +160,13 @@ export function pickTools(defs, query, {
   }
   for (const h of hits) names.add(h.name);
   if (!cmdEnabled) names.delete('cmd_run');
+  if (!evalEnabled) names.delete('eval');
   const out = [];
   for (const d of defs || []) {
     const n = d?.function?.name;
     if (!names.has(n)) continue;
     if (d?.meta?.cmd && !cmdEnabled) continue;
+    if (d?.meta?.browser && !evalEnabled) continue; // 浏览器执行工具只在 evalEnabled 时下发
     const web = d?.meta?.web;
     if (web && !always.includes(n)) continue; // 联网工具只由 always 带入
     const clean = { ...d };

@@ -2,6 +2,7 @@
 import { settings } from './store.js';
 import { pickTools } from './tool-search.js';
 import { estimateTokens } from './util.js';
+import { runBrowserEval } from './eval-tool.js';
 
 export const FALLBACK_MODELS = [
   {
@@ -296,6 +297,7 @@ export function buildPayload(history, {
         usedTools,
         enabled: true,
         cmdEnabled: s.cmdEnabled === true,
+        evalEnabled: s.evalEnabled === true,
       });
       tools.push(...picked.defs);
     } else {
@@ -442,6 +444,8 @@ export async function getToolDefinitions() {
 }
 
 export async function callTool(name, args) {
+  // eval 只在浏览器主线程执行；开关在前端再校验一次，服务端也会拒绝该工具的调用请求
+  if (name === 'eval') return runBrowserEval(args, settings.evalEnabled === true);
   const r = await fetch('/api/tools/call', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },

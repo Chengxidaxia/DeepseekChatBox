@@ -31,6 +31,8 @@ export const DEFAULT_SETTINGS = {
   localTools: true,
   // 危险：直接在本机 cmd.exe 执行命令，默认关闭，需在设置里显式打开
   cmdEnabled: false,
+  // 危险：在当前浏览器标签页执行 JS，默认关闭（只影响自己，但能读本页 Key/登录态）
+  evalEnabled: false,
   // 工具按需加载：每轮最多检索下发几个本地工具（省 token），默认 8
   toolTopK: 8,
   // local = 本机 web_search / fetch_url（可与其他本地工具共存）；official = DeepSeek 官方服务端工具

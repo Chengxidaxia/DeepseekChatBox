@@ -327,6 +327,18 @@ export function openSettings({ onChange } = {}) {
             onChange?.({ cmdEnabled: true });
           }),
       ]),
+      h('div', { class: 'field', style: { marginTop: '10px' } }, [
+        h('div', { class: 'help danger', html:
+          '<strong>浏览器代码执行 eval（危险，默认关闭）</strong>：开启后模型可调用 <code>eval</code> 在<strong>当前标签页执行任意 JavaScript</strong>（支持 await）。'
+          + '代码只运行在你的浏览器里，碰不到服务器，但<strong>能读取本页的 API Key 与登录态</strong>——只执行你信任的内容。'
+          + '输出上限 2 万字符；<strong>同步死循环会卡住页面，关掉标签页重开即可</strong>。' }),
+        switchRow('开启浏览器代码执行 eval',
+          '关闭时模型看不到该工具，也无法执行。',
+          settings.evalEnabled === true, (v) => {
+            saveSettings({ evalEnabled: v });
+            onChange?.({ evalEnabled: true });
+          }),
+      ]),
       (() => {
         const seg = h('div', { class: 'seg' });
         for (const n of [4, 8, 16, 999]) {

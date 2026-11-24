@@ -1619,6 +1619,24 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       },
     },
     {
+      // eval 在当前浏览器标签页执行 JS，不经过服务端；前端按 evalEnabled 开关过滤。
+      // 服务端不提供实现：即使有人绕过前端直接 POST /api/tools/call 也会被 call() 拒绝。
+      meta: { browser: true },
+      type: 'function',
+      function: {
+        name: 'eval',
+        description: '【危险】在当前浏览器标签页执行一段 JavaScript（支持顶层 await），返回 console 输出与表达式值。代码只运行在用户自己的浏览器里，碰不到服务器，但能读本页 localStorage（含 API Key）与登录态——只执行你信任的代码。默认关闭，需在设置里打开「eval」开关。',
+        parameters: {
+          type: 'object',
+          properties: {
+            code: { type: 'string', description: '要执行的 JavaScript 代码，可用 console.log 输出，可顶层 await，最后一位表达式的值会作为返回值' },
+          },
+          required: ['code'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
       // meta.cmd 让前端按 cmdEnabled 开关过滤；服务端 call() 还会再校验一次
       meta: { cmd: true },
       type: 'function',
@@ -2857,6 +2875,8 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
   };
 
   async function call(name, args) {
+    // eval 只在浏览器主线程执行，服务端没有也不应有实现；拦截绕过前端的直接调用
+    if (name === 'eval') return { ok: false, text: 'eval 只能在浏览器中执行，不支持服务端调用。' };
     const fn = impl[name];
     if (!fn) return { ok: false, text: `未知工具：${name}` };
     const started = Date.now();
