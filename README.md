@@ -481,19 +481,11 @@ deepseek-chatbox/
 
 ---
 
-## 9. 版本号规则（自 v1.12.4 起）
+## 9. 版本号规则
 
-版本号统一为 **`vMAJOR.MINOR.PATCH.buildN`**，构建号写在尾部：
+**网页版（本地 Web + WorkBuddy 专版）只有 `vMAJOR.MINOR.PATCH`，不带构建号。**
+修 bug 发版时 `PATCH + 1`，例：`v1.12.4.build87` → `v1.12.5`（历史 tag 保留原名，不追溯）。
 
-| 段 | 含义 | 示例 |
-|---|---|---|
-| `MAJOR.MINOR.PATCH` | 语义版本；修 bug 发版时 `PATCH + 1` | `1.12.4` |
-| `BUILD`（纯数字） | 自初版以来的累计构建次数 | `87` |
-
-- 完整示例：`v1.12.4.build87`
-- **构建次数包含正式版与测试构建**，测试构建同样带构建号，不省略；在 Release 标题里注明「（测试构建）」
-- 累计数由仓库根目录 `build-count.json` 持久化，每次发版（含 `--test`）成功后自动 `+1`
-- `release.py` 只传 `x.y.z` 会从计数器读取构建号；显式传 `x.y.z.buildN` 则把计数器对齐到 `N`
-- `v1.12.3` 及以前是历史版本，不带构建号，不做追溯
-
-这条规则同步写在 `release.py` 顶部说明、`build-count.json` 与便携版 / 绿色版 `使用说明.txt` 里。
+`vX.Y.Z.buildN` 那套累计构建计数**只属于 iOS 原生仓库**（`deepseek-chatbox-cpp`），
+口径见该仓库 `docs/版本号与构建计数.md`。根目录的 `build-count.json` 是网页版历史留档，
+`release.py` 已不再读写它；`--test` 只影响 Release 标题的「（测试构建）」标注。

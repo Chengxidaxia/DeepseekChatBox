@@ -1288,7 +1288,8 @@ function makeSlider({ max, value = 0, dots = false, ariaLabel = '', onInput, onC
   function xOf(v, m = metrics()) { return gutter + m.span * (max ? v / max : 0); }
   function paintX(x, animate) {
     wrap.classList.toggle('anim', animate !== false);
-    fill.style.width = x + 'px';
+    // 填充只到滑点左缘：最左档宽度为 0，细底条被 34px 滑点完全盖住，不会露蓝边
+    fill.style.width = Math.max(0, x - gutter) + 'px';
     thumb.style.left = x + 'px';
   }
   function paint(animate) {

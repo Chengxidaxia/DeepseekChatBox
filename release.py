@@ -5,16 +5,15 @@
 流程：升版本号 → 重建便携 exe → 打两个 zip → 提交 & 打 tag → 推送 → 建 GitHub Release
 
 用法：
-    python release.py 1.12.4                    # 自动从计数器取构建号 → v1.12.4.build<N>
-    python release.py 1.12.4.build88            # 显式指定构建号（同时写回计数器）
-    python release.py 1.12.4 --test             # 测试构建（同样带构建号，标题标注）
-    python release.py 1.12.4 --title "..." --notes .build/notes-x.md
-    python release.py 1.12.4 --no-build         # 复用已构建的 exe，只重打 zip
-    python release.py 1.12.4 --yes              # 跳过确认
+    python release.py 1.12.5                    # 网页版：v1.12.5（不带构建号）
+    python release.py 1.12.5 --test             # 测试版：标题注明「（测试构建）」
+    python release.py 1.12.5 --title "..." --notes .build/notes-x.md
+    python release.py 1.12.5 --no-build         # 复用已构建的 exe，只重打 zip
+    python release.py 1.12.5 --yes              # 跳过确认
 
-版本号规则：vMAJOR.MINOR.PATCH.buildN，N 是自初版以来的累计构建次数（纯数字）。
-构建次数包含正式版与测试构建，由仓库根目录 build-count.json 持久化；
-每次发布（含 --test）成功后计数器 +1。显式指定 .buildN 时会把计数器对齐到 N。
+版本号规则：网页版（含 WorkBuddy 专版）只用 vMAJOR.MINOR.PATCH，**不带构建号**。
+带 `.buildN` 的是 iOS 原生仓库（deepseek-chatbox-cpp）的口径，见其 docs/版本号与构建计数.md。
+根目录 build-count.json 是历史留档，网页版发版不再读写它。
 不传 --notes 时，自动用「上个 tag..HEAD」的提交信息生成发布说明。
 """
 from __future__ import annotations
@@ -72,8 +71,7 @@ def node_bin() -> str:
 # 1. 版本号
 # --------------------------------------------------------------------------- #
 VER_CORE = r'\d+\.\d+\.\d+'
-VER_FULL = VER_CORE + r'\.build\d+'
-BUILD_COUNT_FILE = os.path.join(ROOT, 'build-count.json')
+BUILD_COUNT_FILE = os.path.join(ROOT, 'build-count.json')  # 历史留档，网页版不再读写
 
 
 def read_build_count() -> int:
@@ -104,17 +102,12 @@ def write_build_count(n: int) -> None:
 
 
 def resolve_version(raw: str) -> str:
-    """只传 x.y.z 时从计数器取构建号；显式 .buildN 时对齐计数器。"""
+    """网页版版本号只有 x.y.z，不带构建号（构建号是 iOS 仓库的口径）。"""
     v = raw.lstrip('v')
-    if '.build' in v:
-        if not re.fullmatch(VER_FULL, v):
-            print('✗ 版本号格式应为 x.y.z 或 x.y.z.build<纯数字构建号>')
-            sys.exit(1)
-        return v
     if not re.fullmatch(VER_CORE, v):
-        print('✗ 版本号格式应为 x.y.z 或 x.y.z.build<纯数字构建号>')
+        print('✗ 网页版版本号格式应为 x.y.z（不带构建号；.buildN 是 iOS 仓库的事）')
         sys.exit(1)
-    return f'{v}.build{read_build_count()}'
+    return v
 
 
 def bump(ver: str) -> None:
@@ -284,8 +277,8 @@ def create_release(ver: str, title: str, notes_file: str | None) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description='一键发版（版本号尾部带累计构建次数）')
-    ap.add_argument('version', help='版本号，例如 1.12.4 或 1.12.4.build87')
+    ap = argparse.ArgumentParser(description='一键发版（网页版版本号 x.y.z，不带构建号）')
+    ap.add_argument('version', help='版本号，例如 1.12.5')
     ap.add_argument('--title', default=None, help='Release 标题，默认 v{版本} — 自动取提交摘要')
     ap.add_argument('--notes', default=None, help='发布说明 markdown 文件；不传则自动生成')
     ap.add_argument('--message', default=None, help='git 提交信息，默认 chore(release): v{版本}')
@@ -320,9 +313,7 @@ def main() -> None:
     tag = git_release(ver, title, message)
     url = create_release(ver, title, a.notes)
 
-    # 发布成功后推进计数器：本次构建号 +1，供下一次构建读取（测试构建同样计入）
-    build_no = int(ver.rsplit('.build', 1)[1])
-    write_build_count(build_no + 1)
+    # 网页版不读写构建计数器（build-count.json 仅为历史留档）
 
     print(f'\n=== 完成 ===\n  {tag}\n  {url}\n')
 

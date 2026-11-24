@@ -1321,19 +1321,34 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   height: 34px;
   margin: 0 4px 12px;
   border-radius: 100px;
-  background: var(--bg-hover);
+  background: transparent;
   touch-action: none;
+}
+/* 底条只画 12px 细条，比 34px 的滑点小；滑点在最左侧时能完全盖住 */
+.ds-range::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 12px;
+  transform: translateY(-50%);
+  border-radius: 100px;
+  background: var(--bg-hover);
+  pointer-events: none;
 }
 /* 滑点左边已选区间 */
 .ds-range-fill {
   position: absolute;
   left: 0;
-  top: 0;
-  bottom: 0;
+  top: 50%;
+  height: 12px;
+  transform: translateY(-50%);
   width: 0;
   border-radius: 100px;
   background: var(--brand-primary);
   opacity: .3;
+  pointer-events: none;
 }
 /* 滑点自己画（原生拇指透明），这样才能做过渡动画 */
 .ds-range-thumb {
