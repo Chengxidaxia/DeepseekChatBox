@@ -1288,9 +1288,11 @@ function makeSlider({ max, value = 0, dots = false, ariaLabel = '', onInput, onC
   function xOf(v, m = metrics()) { return gutter + m.span * (max ? v / max : 0); }
   function paintX(x, animate) {
     wrap.classList.toggle('anim', animate !== false);
-    // 填充从底条左端（left:2）画到滑点中心 x；最左档收成 0。
+    // 填充从底条左端（left:2）画到滑点中心 x；只有滑点真正在最左顶点时才收成 0。
+    // 注意必须看滑点实际位置 x，不能看档位值 val()：拖动中滑点已离开顶点但档位还没跳，
+    // 用 val() 会把填充误清零，出现「拖到一半颜色突然消失」。
     // 底条两端各缩进 2px 后，端点圆角圆心正好落在滑点中心，最左/最右档都不会露边。
-    fill.style.width = val() === 0 ? '0px' : Math.max(0, x - 2) + 'px';
+    fill.style.width = x <= gutter ? '0px' : Math.max(0, x - 2) + 'px';
     thumb.style.left = x + 'px';
   }
   function paint(animate) {
