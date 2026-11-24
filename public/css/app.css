@@ -1324,14 +1324,14 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   background: transparent;
   touch-action: none;
 }
-/* 底条只画 12px 细条，比 34px 的滑点小；滑点在最左侧时能完全盖住 */
+/* 底条画 30px，比 34px 的滑点小一圈；滑点在最左侧时能完全盖住 */
 .ds-range::before {
   content: '';
   position: absolute;
   left: 0;
   right: 0;
   top: 50%;
-  height: 12px;
+  height: 30px;
   transform: translateY(-50%);
   border-radius: 100px;
   background: var(--bg-hover);
@@ -1342,7 +1342,7 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   position: absolute;
   left: 0;
   top: 50%;
-  height: 12px;
+  height: 30px;
   transform: translateY(-50%);
   width: 0;
   border-radius: 100px;
