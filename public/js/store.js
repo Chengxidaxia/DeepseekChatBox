@@ -383,6 +383,9 @@ export async function importConversations(list, mode = 'merge') {
     createdAt: c.createdAt || Date.now(),
     updatedAt: c.updatedAt || Date.now(),
     pinned: Boolean(c.pinned),
+    // 分组归属与会话级设置：导出/导入必须原样带回，否则分组会丢失
+    groupId: c.groupId || null,
+    settings: c.settings && typeof c.settings === 'object' ? c.settings : {},
     messages: c.messages.map((m) => ({
       id: m.id || 'm_' + Math.random().toString(36).slice(2, 8),
       role: m.role === 'assistant' ? 'assistant' : 'user',
@@ -412,6 +415,43 @@ export async function importConversations(list, mode = 'merge') {
     body: JSON.stringify({ mode: 'replace', conversations: convs }),
   }).catch(() => {});
   return incoming.length;
+}
+
+/** 完整快照导出：v3 起包含分组（各组设置存于 group.settings）与 UI 状态 */
+export async function exportAllData() {
+  const snap = await req('/api/store');
+  return {
+    app: 'deepseek-chatbox',
+    version: 3,
+    exportedAt: Date.now(),
+    conversations: Array.isArray(snap.conversations) ? snap.conversations : [],
+    settings: snap.settings || {},
+    ui: snap.ui || {},
+    groups: Array.isArray(snap.groups) ? snap.groups : [],
+  };
+}
+
+/** 完整快照导入：对话 + 分组 + 全局设置 + UI。merge 时分组按 id 合并，replace 时整体替换 */
+export async function importAllData(data, mode = 'merge') {
+  const d = Array.isArray(data) ? { conversations: data } : (data || {});
+  const incoming = Array.isArray(d.conversations) ? d.conversations : [];
+  const incGroups = (Array.isArray(d.groups) ? d.groups : []).filter((g) => g && g.id);
+  const n = await importConversations(incoming, mode);
+  if (incGroups.length || mode === 'replace') {
+    let next = incGroups;
+    if (mode === 'merge') {
+      const byId = new Map(groups.map((g) => [g.id, g]));
+      for (const g of incGroups) byId.set(g.id, g);
+      next = [...byId.values()];
+    }
+    groups = next;
+    await req('/api/groups', {
+      method: 'PUT', headers: jsonHeaders, body: JSON.stringify({ groups }),
+    });
+  }
+  if (d.settings && typeof d.settings === 'object') saveSettings(d.settings);
+  if (d.ui && typeof d.ui === 'object') saveUI(d.ui);
+  return n;
 }
 
 export async function clearAllOnServer() {

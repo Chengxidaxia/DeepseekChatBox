@@ -6,6 +6,7 @@ import {
   searchConversations, initStore, hasApiKey, uploadAttachment, attachmentUrl, flushNow,
   allGroups, getGroup, createGroup, updateGroup, deleteGroup, moveConversationToGroup,
   effectiveSettings, hasCustomScope, isPeakNow, isPeakAt,
+  exportAllData,
 } from './store.js';
 import { setLang, applyStatic, t, getLang } from './i18n.js';
 import { renderMarkdown, hydrateMermaid, toPlainText, resetMermaidTheme } from './markdown.js';
@@ -2744,9 +2745,14 @@ function exportConversation(id) {
   download(`${convTitle(c).replace(/[\\/:*?"<>|]/g, '_')}.md`, lines.join('\n'), 'text/markdown');
 }
 
-function exportAll() {
-  download(`deepseek-chatbox-${new Date().toISOString().slice(0, 10)}.json`,
-    JSON.stringify({ app: 'deepseek-chatbox', version: 1, exportedAt: Date.now(), conversations: allConversations() }, null, 2));
+async function exportAll() {
+  try {
+    const snap = await exportAllData();
+    download(`deepseek-chatbox-${new Date().toISOString().slice(0, 10)}.json`,
+      JSON.stringify(snap, null, 2));
+  } catch (e) {
+    toast('导出失败：' + e.message);
+  }
 }
 
 /* ------------------------------ 事件绑定 ------------------------------ */

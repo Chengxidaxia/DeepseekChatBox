@@ -1,6 +1,6 @@
 /* 设置弹窗 */
 import { h, $, download, toast } from './util.js';
-import { settings, saveSettings, allConversations, importConversations, clearAllConversations, meta as storeMeta, saveConversationsNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
+import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, clearAllConversations, meta as storeMeta, saveConversationsNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
 import { t } from './i18n.js';
 import { appConfirm } from './dialog.js';
 import { listModels, cachedModels } from './api.js';
@@ -387,10 +387,9 @@ export function openSettings({ onChange } = {}) {
       if (!f) return;
       try {
         const data = JSON.parse(await f.text());
-        const list = Array.isArray(data) ? data : data.conversations || [];
-        const n = await importConversations(list, 'merge');
+        const n = await importAllData(data, 'merge');
         saveConversationsNow();
-        toast(`已导入 ${n} 个对话，刷新页面后生效`);
+        toast(`已导入 ${n} 个对话及分组，刷新页面后生效`);
         setTimeout(() => location.reload(), 900);
       } catch (e) {
         toast('导入失败：' + e.message);
@@ -401,9 +400,9 @@ export function openSettings({ onChange } = {}) {
     const exportBtn = h('button', { class: 'btn', type: 'button', text: t('exportData') });
     exportBtn.addEventListener('click', async () => {
       try {
-        const snap = await fetch('/api/store').then((r) => r.json());
+        const snap = await exportAllData();
         download(`deepseek-chatbox-${new Date().toISOString().slice(0, 10)}.json`,
-          JSON.stringify({ app: 'deepseek-chatbox', version: 2, exportedAt: Date.now(), conversations: snap.conversations, settings: snap.settings }, null, 2));
+          JSON.stringify(snap, null, 2));
       } catch (e) {
         toast('导出失败：' + e.message);
       }
