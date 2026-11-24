@@ -1324,12 +1324,13 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
   background: transparent;
   touch-action: none;
 }
-/* 底条画 30px，比 34px 的滑点小一圈；滑点在最左侧时能完全盖住 */
+/* 底条画 30px、两端各缩进 2px：端点圆角半径 15，圆心正好落在滑点中心（17 / w-17），
+   两个圆同心且滑点更大，最左/最右档都能完全盖住底条端点，不露灰/蓝边 */
 .ds-range::before {
   content: '';
   position: absolute;
-  left: 0;
-  right: 0;
+  left: 2px;
+  right: 2px;
   top: 50%;
   height: 30px;
   transform: translateY(-50%);
@@ -1340,7 +1341,7 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
 /* 滑点左边已选区间 */
 .ds-range-fill {
   position: absolute;
-  left: 0;
+  left: 2px;
   top: 50%;
   height: 30px;
   transform: translateY(-50%);

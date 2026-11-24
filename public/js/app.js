@@ -1288,8 +1288,9 @@ function makeSlider({ max, value = 0, dots = false, ariaLabel = '', onInput, onC
   function xOf(v, m = metrics()) { return gutter + m.span * (max ? v / max : 0); }
   function paintX(x, animate) {
     wrap.classList.toggle('anim', animate !== false);
-    // 填充只到滑点左缘：最左档宽度为 0，底条被 34px 滑点完全盖住，不会露蓝边
-    fill.style.width = Math.max(0, x - gutter) + 'px';
+    // 填充从底条左端（left:2）画到滑点中心 x；最左档收成 0。
+    // 底条两端各缩进 2px 后，端点圆角圆心正好落在滑点中心，最左/最右档都不会露边。
+    fill.style.width = val() === 0 ? '0px' : Math.max(0, x - 2) + 'px';
     thumb.style.left = x + 'px';
   }
   function paint(animate) {
