@@ -18,6 +18,7 @@ node_modules/
 .DS_Store
 Thumbs.db
 *.log
+__pycache__/
 
 # 备份
 backups/

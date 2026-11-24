@@ -5,11 +5,16 @@
 流程：升版本号 → 重建便携 exe → 打两个 zip → 提交 & 打 tag → 推送 → 建 GitHub Release
 
 用法：
-    python release.py 1.12.2
-    python release.py 1.12.2 --title "v1.12.2 — 说明" --notes .build/notes-1.12.2.md
-    python release.py 1.12.2 --no-build        # 复用已构建的 exe，只重打 zip
-    python release.py 1.12.2 --yes             # 跳过确认
+    python release.py 1.12.4                    # 自动从计数器取构建号 → v1.12.4.build<N>
+    python release.py 1.12.4.build88            # 显式指定构建号（同时写回计数器）
+    python release.py 1.12.4 --test             # 测试构建（同样带构建号，标题标注）
+    python release.py 1.12.4 --title "..." --notes .build/notes-x.md
+    python release.py 1.12.4 --no-build         # 复用已构建的 exe，只重打 zip
+    python release.py 1.12.4 --yes              # 跳过确认
 
+版本号规则：vMAJOR.MINOR.PATCH.buildN，N 是自初版以来的累计构建次数（纯数字）。
+构建次数包含正式版与测试构建，由仓库根目录 build-count.json 持久化；
+每次发布（含 --test）成功后计数器 +1。显式指定 .buildN 时会把计数器对齐到 N。
 不传 --notes 时，自动用「上个 tag..HEAD」的提交信息生成发布说明。
 """
 from __future__ import annotations
@@ -66,6 +71,52 @@ def node_bin() -> str:
 # --------------------------------------------------------------------------- #
 # 1. 版本号
 # --------------------------------------------------------------------------- #
+VER_CORE = r'\d+\.\d+\.\d+'
+VER_FULL = VER_CORE + r'\.build\d+'
+BUILD_COUNT_FILE = os.path.join(ROOT, 'build-count.json')
+
+
+def read_build_count() -> int:
+    """读取累计构建次数（含测试构建）。文件不存在时回退到已有 tag 数。"""
+    if os.path.exists(BUILD_COUNT_FILE):
+        try:
+            with open(BUILD_COUNT_FILE, encoding='utf-8') as f:
+                data = json.load(f)
+            n = int(data.get('build', data.get('count', 0)))
+            if n > 0:
+                return n
+        except (ValueError, TypeError, OSError, json.JSONDecodeError):
+            pass
+    # 兜底：兼容早期没有计数器的版本，按已有 tag 数估算
+    tags = sh(['git', 'tag', '-l'], check=False).stdout.splitlines()
+    return max(1, len([t for t in tags if t.strip()]))
+
+
+def write_build_count(n: int) -> None:
+    with open(BUILD_COUNT_FILE, 'w', encoding='utf-8', newline='') as f:
+        json.dump({
+            'build': n,
+            'meaning': '自初版以来的累计构建次数（含正式版与测试构建）',
+            'updatedAt': time.strftime('%Y-%m-%d %H:%M:%S %z'),
+        }, f, ensure_ascii=False, indent=2)
+        f.write('\n')
+    print(OK, f'构建计数器 → {n}')
+
+
+def resolve_version(raw: str) -> str:
+    """只传 x.y.z 时从计数器取构建号；显式 .buildN 时对齐计数器。"""
+    v = raw.lstrip('v')
+    if '.build' in v:
+        if not re.fullmatch(VER_FULL, v):
+            print('✗ 版本号格式应为 x.y.z 或 x.y.z.build<纯数字构建号>')
+            sys.exit(1)
+        return v
+    if not re.fullmatch(VER_CORE, v):
+        print('✗ 版本号格式应为 x.y.z 或 x.y.z.build<纯数字构建号>')
+        sys.exit(1)
+    return f'{v}.build{read_build_count()}'
+
+
 def bump(ver: str) -> None:
     print('1. 版本号')
     pkg = os.path.join(ROOT, 'package.json')
@@ -85,7 +136,7 @@ def bump(ver: str) -> None:
 
     if os.path.exists(PORTABLE_MANUAL):
         s = read(PORTABLE_MANUAL)
-        n = re.sub(r'版本 \d+\.\d+\.\d+', f'版本 {ver}', s)
+        n = re.sub(r'版本 \d+\.\d+\.\d+(?:\.build\d+)?', f'版本 {ver}', s)
         if n != s:
             write(PORTABLE_MANUAL, n)
             print(OK, '便携版使用说明')
@@ -95,8 +146,8 @@ def bump(ver: str) -> None:
             s = f.read()
         # 标题「绿色版 vX」+ 正文「本包是 vX 的源码快照」两处都要改，
         # 以前只改标题，导致正文长期残留旧版本号（v1.11.0）
-        n = re.sub(r'(绿色版 v)\d+\.\d+\.\d+', rf'\g<1>{ver}', s, count=1)
-        n = re.sub(r'(本包是 v)\d+\.\d+\.\d+( 的源码快照)', rf'\g<1>{ver}\g<2>', n, count=1)
+        n = re.sub(r'(绿色版 v)\d+\.\d+\.\d+(?:\.build\d+)?', rf'\g<1>{ver}', s, count=1)
+        n = re.sub(r'(本包是 v)\d+\.\d+\.\d+(?:\.build\d+)?( 的源码快照)', rf'\g<1>{ver}\g<2>', n, count=1)
         if n != s:
             with open(GREEN_MANUAL, 'w', encoding='utf-8-sig', newline='') as f:
                 f.write(n)
@@ -131,7 +182,7 @@ def sync_green() -> None:
         if os.path.isdir(dst):
             shutil.rmtree(dst)
         shutil.copytree(os.path.join(ROOT, name), dst)
-    for f in ('server.mjs', 'package.json', '启动.bat'):
+    for f in ('server.mjs', 'package.json', '启动.bat', 'README.md'):
         src = os.path.join(ROOT, f)
         if os.path.exists(src):
             shutil.copy2(src, os.path.join(GREEN, f))
@@ -233,26 +284,25 @@ def create_release(ver: str, title: str, notes_file: str | None) -> str:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description='一键发版')
-    ap.add_argument('version', help='版本号，例如 1.12.2')
+    ap = argparse.ArgumentParser(description='一键发版（版本号尾部带累计构建次数）')
+    ap.add_argument('version', help='版本号，例如 1.12.4 或 1.12.4.build87')
     ap.add_argument('--title', default=None, help='Release 标题，默认 v{版本} — 自动取提交摘要')
     ap.add_argument('--notes', default=None, help='发布说明 markdown 文件；不传则自动生成')
     ap.add_argument('--message', default=None, help='git 提交信息，默认 chore(release): v{版本}')
+    ap.add_argument('--test', action='store_true', help='标记为测试构建（同样带构建号，标题注明）')
     ap.add_argument('--no-build', action='store_true', help='跳过 exe 构建，直接用已有 exe 重打 zip')
     ap.add_argument('--yes', action='store_true', help='跳过确认')
     a = ap.parse_args()
 
-    ver = a.version.lstrip('v')
-    if not re.fullmatch(r'\d+\.\d+\.\d+', ver):
-        print('✗ 版本号格式应为 x.y.z')
-        sys.exit(1)
+    ver = resolve_version(a.version)
 
     if sh(['git', 'tag', '-l', f'v{ver}']).stdout.strip():
         print(f'✗ tag v{ver} 已存在')
         sys.exit(1)
 
-    title = a.title or f'v{ver}'
-    message = a.message or f'chore(release): v{ver}'
+    suffix = '（测试构建）' if a.test else ''
+    title = a.title or f'v{ver}{suffix}'
+    message = a.message or f'chore(release): v{ver}{suffix}'
 
     print(f'\n=== 发版 v{ver} ===')
     print(f'  标题：{title}')
@@ -269,6 +319,10 @@ def main() -> None:
     sync_green()
     tag = git_release(ver, title, message)
     url = create_release(ver, title, a.notes)
+
+    # 发布成功后推进计数器：本次构建号 +1，供下一次构建读取（测试构建同样计入）
+    build_no = int(ver.rsplit('.build', 1)[1])
+    write_build_count(build_no + 1)
 
     print(f'\n=== 完成 ===\n  {tag}\n  {url}\n')
 

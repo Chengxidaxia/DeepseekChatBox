@@ -598,20 +598,30 @@ function renderChat() {
     return;
   }
   const versions = messageVersions(conv);
-  // 先规划：连续的「纯工具」消息合并成一组，其余按原样渲染
+  // 先规划：连续「纯工具」往返连同紧随其后的收尾正文合并成一条助手消息
+  //（官方风格：工具调用、思考、正文在同一条回答里，用量也只显示一行）
   const items = [];
   for (const m of list) {
     if (m.role === 'tool') continue; // 结果已合并进对应的调用卡片
     if (isToolOnlyMessage(m)) {
       const last = items[items.length - 1];
-      if (last && last.run) last.msgs.push(m);
-      else items.push({ run: true, msgs: [m] });
+      if (last && last.run && !last.answer) last.msgs.push(m);
+      else items.push({ run: true, msgs: [m], answer: null });
     } else {
-      items.push({ run: false, m });
+      const last = items[items.length - 1];
+      if (last && last.run && !last.answer && m.role === 'assistant'
+          && !(m.toolCalls || []).length && !(m.serverToolCalls || []).length) {
+        // 同一轮问答的收尾正文，并进上面的工具气泡
+        last.answer = m;
+      } else {
+        items.push({ run: false, m });
+      }
     }
   }
   for (const it of items) {
-    const node = it.run ? toolRunView(it.msgs) : messageView(it.m, versions);
+    const node = it.run
+      ? toolRunView(it.msgs, it.answer, versions)
+      : messageView(it.m, versions);
     if (node) els.viewInner.append(node);
   }
   requestAnimationFrame(() => scrollToBottom(true));
@@ -676,31 +686,39 @@ function messageView(m, versions) {
 
   const wrap = h('div', { class: 'msg assistant', 'data-id': m.id });
   const body = h('div', { class: 'body' });
+  body.append(...assistantBodyParts(m, versions));
+  wrap.append(body);
+  return wrap;
+}
 
-  if (m.reasoning) body.append(thinkingView(m));
-  if (m.toolCalls?.length) body.append(toolGroupEl(collectToolCalls(m), `m:${m.id}`));
-  if (m.serverToolCalls?.length) body.append(toolCardsView(m.serverToolCalls));
+/** 助手消息正文（思考/工具/正文/操作条/用量），单条消息与合并气泡共用 */
+function assistantBodyParts(m, versions, { withUsage = true } = {}) {
+  const parts = [];
+
+  if (m.reasoning) parts.push(thinkingView(m));
+  if (m.toolCalls?.length) parts.push(toolGroupEl(collectToolCalls(m), `m:${m.id}`));
+  if (m.serverToolCalls?.length) parts.push(toolCardsView(m.serverToolCalls));
 
   if (m.error) {
-    body.append(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: m.error })]));
+    parts.push(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: m.error })]));
   }
   if (m.refusal) {
-    body.append(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: m.refusal })]));
+    parts.push(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: m.refusal })]));
   }
 
   const content = h('div', { class: 'md' });
   content.innerHTML = renderMarkdown(m.content || '', { annotations: m.annotations || [] });
   if (m.streaming) content.classList.add('cursor');
-  if (m.content || !m.error) body.append(content);
+  if (m.content || !m.error) parts.push(content);
 
   if (m.finishReason === 'length') {
-    body.append(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: t('finishLength') })]));
+    parts.push(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: t('finishLength') })]));
   }
   if (m.finishReason === 'content_filter' && !m.refusal) {
-    body.append(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: t('refusal') })]));
+    parts.push(h('div', { class: 'notice' }, [iconEl('i-warning'), h('div', { text: t('refusal') })]));
   }
 
-  const acts = h('div', { class: 'msg-actions' + (m.streaming ? '' : '') });
+  const acts = h('div', { class: 'msg-actions' });
   acts.append(actBtn('i-copy', t('copy'), () => copyMessage(m)));
   if (!m.streaming) {
     acts.append(actBtn('i-refresh', t('regenerate'), () => regenerate(m)));
@@ -711,17 +729,17 @@ function messageView(m, versions) {
   // 分支切换器必须常显（否则用户不知道有多版本），和 hover 才出现的操作按钮并排
   const convNow = currentConversation();
   const sw = convNow ? branchSwitcher(convNow, m, versions) : null;
-  body.append(sw ? h('div', { class: 'msg-bar' }, [sw, acts]) : acts);
+  parts.push(sw ? h('div', { class: 'msg-bar' }, [sw, acts]) : acts);
 
-  if (m.usage) body.append(usageLine(m));
-  wrap.append(body);
-  return wrap;
+  if (withUsage && m.usage) parts.push(usageLine(m));
+  return parts;
 }
 
 function thinkingView(m) {
   const seconds = m.reasoningSeconds ? Math.max(1, Math.round(m.reasoningSeconds)) : null;
   const collapsed = !m.streaming;
   const box = h('div', { class: 'think' + (collapsed ? ' collapsed' : '') + (m.streaming && !m.content ? ' streaming' : '') });
+  box.dataset.thinkFor = m.id;
   const head = h('button', { class: 'think-head', type: 'button' }, [
     h('span', { class: 'label', text: m.streaming && !m.content ? t('thinking') : seconds ? `${t('thought')}（${seconds}s）` : t('thought') }),
     iconEl('i-chevron', 'chev'),
@@ -882,28 +900,40 @@ function isToolOnlyMessage(m) {
     && !(m.serverToolCalls || []).length;
 }
 
-/** 把连续 N 轮「纯工具」往返合并渲染成一个气泡：思考块依次排开，工具调用合成一组 */
-function toolRunView(msgs) {
-  const wrap = h('div', { class: 'msg assistant toolrun', 'data-id': msgs[0].id });
+/** 连续「纯工具」往返 + 收尾正文合并成一条助手消息：严格按发生顺序排列，用量只留一行 */
+function toolRunView(msgs, answer, versions) {
+  // data-id 用收尾正文的 id：流式渲染要靠它定位这一条气泡
+  const tail = answer || msgs[msgs.length - 1];
+  const wrap = h('div', { class: 'msg assistant' + (answer ? ' merged' : ' toolrun'), 'data-id': tail.id });
   const body = h('div', { class: 'body' });
-  const calls = [];
+  // 按发生顺序逐轮渲染：思考 → 该轮自己的工具调用组。
+  // 不能跨轮把工具调用收集到一起，否则会变成「所有思考 → 所有工具 → 正文」，顺序全乱。
   for (const m of msgs) {
     if (m.reasoning) body.append(thinkingView(m));
-    calls.push(...collectToolCalls(m));
+    const calls = collectToolCalls(m);
+    if (calls.length) body.append(toolGroupEl(calls, `m:${m.id}`));
   }
-  const group = toolGroupEl(calls, `run:${msgs[0].id}`);
-  if (group) body.append(group);
 
+  if (answer) {
+    // 收尾正文（含它自己的思考/工具/操作条）放进独立容器，流式思考插在它的 .md 前
+    const host = h('div', { class: 'merged-answer' });
+    host.append(...assistantBodyParts(answer, versions, { withUsage: false }));
+    body.append(host);
+  } else {
+    // 还没出正文：只保留「重新生成」，指向这串工具往返的最后一轮
+    const acts = h('div', { class: 'msg-actions' });
+    if (!msgs.some((m) => m.streaming)) {
+      acts.append(actBtn('i-refresh', t('regenerate'), () => regenerate(msgs[msgs.length - 1])));
+    }
+    body.append(acts);
+  }
+
+  // 整条回答（工具轮 + 收尾正文）只显示一行合并用量
   const withUsage = msgs.filter((m) => m.usage);
+  if (answer?.usage) withUsage.push(answer);
   if (withUsage.length === 1) body.append(usageLine(withUsage[0]));
   else if (withUsage.length > 1) body.append(usageLineMerged(withUsage));
 
-  // 只保留「重新生成」：指向这串工具往返的最后一轮
-  const acts = h('div', { class: 'msg-actions' });
-  if (!msgs.some((m) => m.streaming)) {
-    acts.append(actBtn('i-refresh', t('regenerate'), () => regenerate(msgs[msgs.length - 1])));
-  }
-  body.append(acts);
   wrap.append(body);
   return wrap;
 }
@@ -1781,7 +1811,15 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
 async function streamRound({ assistant, payload }) {
   assistant.streaming = true;
   const el = $(`.msg[data-id="${assistant.id}"]`);
-  const refs = { el, content: el?.querySelector('.md'), body: el?.querySelector('.body') };
+  // 工具轮+收尾正文合并后，正文在 .merged-answer 里；思考必须插在它的 .md 前，
+  // 否则会命中前面工具轮自己的思考块
+  const answerHost = el?.querySelector('.merged-answer') || null;
+  const refs = {
+    el,
+    answerHost,
+    content: (answerHost || el)?.querySelector('.md'),
+    body: el?.querySelector('.body'),
+  };
   let reasoningStart = 0;
   let lastPaint = 0;
   const toolAcc = new Map();
@@ -1806,12 +1844,14 @@ async function streamRound({ assistant, payload }) {
           case 'reasoning':
             if (!reasoningStart) reasoningStart = performance.now();
             assistant.reasoning += ev.text;
-            if (refs.el && !refs.el.querySelector('.think')) {
-              const body = refs.el.querySelector('.body');
-              body.insertBefore(thinkingView(assistant), body.firstChild);
-              refs.content = refs.el.querySelector('.md');
+            const thinkSel = `.think[data-think-for="${assistant.id}"]`;
+            if (refs.el && !refs.el.querySelector(thinkSel)) {
+              const host = refs.answerHost || refs.el.querySelector('.body');
+              const md = host.querySelector('.md');
+              host.insertBefore(thinkingView(assistant), md || host.firstChild);
+              refs.content = host.querySelector('.md') || refs.content;
             }
-            const thinkEl = refs.el?.querySelector('.think');
+            const thinkEl = refs.el?.querySelector(thinkSel);
             if (thinkEl) thinkEl.classList.add('streaming');
             paint();
             break;
@@ -1893,12 +1933,12 @@ async function streamRound({ assistant, payload }) {
 
 function renderToolCardsLive(refs, assistant) {
   if (!refs.el) return;
-  const body = refs.el.querySelector('.body');
-  let node = body.querySelector('.tool-cards');
+  const host = refs.answerHost || refs.el.querySelector('.body');
+  let node = host.querySelector('.tool-cards');
   if (!node) {
     node = h('div', { class: 'tool-cards' });
-    const md = body.querySelector('.md');
-    body.insertBefore(node, md);
+    const md = host.querySelector('.md');
+    host.insertBefore(node, md || host.firstChild);
   }
   node.replaceWith(toolCardsView(assistant.serverToolCalls));
   scrollToBottom();
