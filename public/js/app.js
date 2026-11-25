@@ -380,6 +380,7 @@ async function removeConversation(c) {
   });
   if (!ok) return;
   deleteConversation(c.id);
+  draftText.delete(c.id);      // 会话删了，草稿一起清掉
   if (state.currentId === c.id) {
     state.currentId = null;
     syncRoute();              // 当前会话被删，回根路径
@@ -504,6 +505,10 @@ function openConversation(id) {
   syncRoute(true);          // 切会话记一条历史，支持浏览器后退
   renderSidebar();
   renderChat();
+  // 恢复该会话的输入草稿：切走时保留、切回时还原（只存在内存，刷新即丢）
+  els.prompt.value = draftText.get(id) || '';
+  autoGrow();
+  updateComposerState();
   closeSidebarOnMobile();
 }
 
@@ -761,7 +766,9 @@ function assistantBodyParts(m, versions, { withUsage = true } = {}) {
 
 function thinkingView(m) {
   const seconds = m.reasoningSeconds ? Math.max(1, Math.round(m.reasoningSeconds)) : null;
-  const collapsed = !m.streaming;
+  // 默认：生成中展开、结束后折叠；用户手动点过的以用户选择为准（重绘后仍然生效）
+  const explicit = thinkOpen.get(m.id);
+  const collapsed = explicit === undefined ? !m.streaming : !explicit;
   const box = h('div', { class: 'think' + (collapsed ? ' collapsed' : '') + (m.streaming && !m.content ? ' streaming' : '') });
   box.dataset.thinkFor = m.id;
   const head = h('button', { class: 'think-head', type: 'button' }, [
@@ -769,7 +776,10 @@ function thinkingView(m) {
     iconEl('i-chevron', 'chev'),
   ]);
   const bodyEl = h('div', { class: 'think-body', text: m.reasoning });
-  head.addEventListener('click', () => box.classList.toggle('collapsed'));
+  head.addEventListener('click', () => {
+    box.classList.toggle('collapsed');
+    thinkOpen.set(m.id, !box.classList.contains('collapsed'));
+  });
   box.append(head, bodyEl);
   return box;
 }
@@ -785,6 +795,10 @@ const TOOL_META = { web_search: ['联网搜索', 'i-globe'], fetch_url: ['读取
 /* 展开状态：renderChat 会整体重绘，用 Set 记住用户点开过哪些组/行 */
 const toolGroupOpen = new Set();
 const toolRowOpen = new Set();
+/* 思考块展开状态：重绘时保留用户手动展开/折叠，避免模型一换状态（输出/工具）就被关掉 */
+const thinkOpen = new Map();   // msgId -> bool（用户显式选择）
+/* 输入框草稿：按会话 id 存在内存里，切会话保留、切回恢复，刷新即丢 */
+const draftText = new Map();   // convId -> string
 
 /* 一次提问最多允许「模型请求工具 → 本地执行 → 再请求」的轮数。
    用尽后不再静默中断，而是告诉模型收尾（禁用工具，只让它基于已有结果作答）。 */
@@ -1707,6 +1721,7 @@ async function sendMessage({ continueMode = false, prefix = '' } = {}) {
     state.attachments = [];
     renderTray();
     els.prompt.value = '';
+    if (conv?.id) draftText.delete(conv.id);   // 已发送，草稿作废
     autoGrow();
   }
 
@@ -1964,7 +1979,9 @@ async function streamRound({ assistant, payload }) {
     lastPaint = now;
     refs.content.innerHTML = renderMarkdown(assistant.content, { annotations: assistant.annotations });
     refs.content.classList.toggle('cursor', assistant.streaming);
-    const thinkBody = refs.el?.querySelector('.think-body');
+    // 必须按 msgId 精确定位：merged 气泡里可能同时存在前面工具轮的思考块，
+    // 用全局 .think-body 会把最新思考写进历史那一段。
+    const thinkBody = refs.el?.querySelector(`.think[data-think-for="${assistant.id}"] .think-body`);
     if (thinkBody) thinkBody.textContent = assistant.reasoning;
     scrollToBottom();
   };
@@ -3041,7 +3058,12 @@ function wireSwipe() {
 
 function wire() {
   wireStickToBottom();
-  els.prompt.addEventListener('input', () => { autoGrow(); updateComposerState(); });
+  els.prompt.addEventListener('input', () => {
+    // 按会话实时记草稿，切到别的对话再切回来能恢复；欢迎页（无会话）不记
+    if (state.currentId) draftText.set(state.currentId, els.prompt.value);
+    autoGrow();
+    updateComposerState();
+  });
   els.prompt.addEventListener('focus', () => els.shell.classList.add('focused'));
   els.prompt.addEventListener('blur', () => els.shell.classList.remove('focused'));
   els.prompt.addEventListener('keydown', (e) => {
