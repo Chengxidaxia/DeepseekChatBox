@@ -104,7 +104,7 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 
 ### 便携版（单文件 exe，免 Node）
 
-`portable/dist/DeepSeekChatBox.exe` —— **98.9 MB 单文件**，内嵌 Node 22 运行时 + 全部前端资源，双击即用：
+`portable/dist/DeepSeekChatBox.exe` —— **102.9 MB 单文件**，内嵌 Node 22 运行时 + 全部前端资源，双击即用：
 
 - 不解压、不装 Node、不写注册表、不联网下载；删掉 exe 即彻底卸载
 - 启动后自动挑端口（默认 17321，占用则顺延），已开实例时只打开浏览器不重复起服务
@@ -197,7 +197,7 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 | `search_history` | 搜索本地历史对话 | 标题、时间、命中片段（最多 20 条） |
 | `usage_stats` | 本地用量统计 | 对话数、消息数、输入/输出/缓存命中 tokens |
 | `calculator` | 安全表达式计算（递归下降解析，**不用 eval**） | 支持 `+ - * / % ^`、括号、`sqrt/abs/round/min/max/pow/log/exp/三角函数`、`PI/E` |
-| `hash_text` | 文本哈希 | md5 / sha1 / sha256 / sha512 十六进制 |
+| `hash_text` | 文本哈希 | md5 / sha1 / sha224 / sha256 / sha384 / sha512 / sha3-224 / sha3-256 / sha3-384 / sha3-512 十六进制 |
 | `base64_codec` | Base64 编解码 | UTF-8 安全，支持中文 |
 | `url_codec` | URL 编解码 | `encodeURIComponent` / `decodeURIComponent` |
 | `json_format` | JSON 校验 / 格式化 / 点路径提取 | 美化输出，路径不存在时报错 |
@@ -227,12 +227,15 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 | `color_convert` | 颜色互转与对比度 | HEX / RGB / HSL / HSV、相对亮度、YIQ、对白/黑及自定义背景的 WCAG 对比度 |
 | `text_kit` | 文本批量处理 | 去重 / 排序（字典、数值、长度）/ 清理空行与空白 / 加前后缀 / 按分隔符拆行 / camel·snake·kebab·pascal·const·title 命名转换 |
 | `aes_crypto` | AES 对称加解密 | CBC / GCM / ECB，key 与 iv 支持 utf8·hex·base64，GCM 返回 auth tag；用于复现前端加密、解接口密文 |
+| `eval` | **【默认关闭】浏览器端 JS 执行** | 支持 `await` 与 `console` 回显；服务端拦直接调用，只在浏览器主线程执行 |
+| `sub_agent` | 子智能体（cloud / local） | local 可接 Ollama 原生接口或任意 OpenAI 兼容 `/chat/completions`；支持工具调用、图片输入与思考强度 |
+| `peak_status` | 当前 DeepSeek 峰谷时段 | 北京时间、当前峰/谷、计价规则、下次切换时间（不含法定节假日/调休） |
 | `cmd_run` | **【危险】本机 cmd 执行命令** | 退出码 + stdout/stderr；默认关闭，见下 |
 
 - 工具定义由 `GET /api/tools/definitions` 下发，执行走 `POST /api/tools/call`，浏览器不接触 Key
 - 定义里的 `meta.web`（`search` / `fetch`）只用于前端区分「联网工具」与「本地工具」，发请求前会被剥掉；
   `meta.cmd` 用于前端按 `cmdEnabled` 开关过滤
-- **工具按需加载（搜索引擎）**：40 个工具如果每次全量声明，光定义就约 5610 tokens/轮
+- **工具按需加载（搜索引擎）**：43 个工具如果每次全量声明，光定义就约 5700 tokens/轮
   （新增这 6 个只多约 250 tokens，因为描述都控制在两行内）。
   现在用 `public/js/tool-search.js` 的 BM25 检索：工具名 + 强关键词 + 描述分词打分，
   每轮只下发与当前问题相关的工具（设置 → 生成 → 「工具按需加载」可选 4/8/16/全部）。
@@ -324,6 +327,21 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 Inter 只覆盖拉丁字符（`unicode-range` 与官方一致），中文继续走系统字体 —— 这也是官方做法，不是缺字。
 官方空态没有「建议胶囊」，本项目的是自创组件，仅沿用官方的 18px 圆角与 13px/500 语言。
 
+### 近期能力（v1.12.6 – v1.14.3）
+
+| 能力 | 版本 | 说明 |
+|---|---|---|
+| 会话链接与标题同步 | v1.12.3 | 地址栏 `/a/chat/s/<uuid>` 与官方一致，可分享、刷新恢复；标签页标题随会话标题变化 |
+| 附件查看与管理 | v1.12.1 | 消息内文本附件可预览、图片可看大图；编辑消息时可预览/移除附件 |
+| 浏览器端 `eval` | v1.13.0 | 默认关闭，支持 `await` / `console` 回显，只在浏览器主线程执行 |
+| `sub_agent` 子智能体 | v1.13.2 / v1.13.4 | cloud / local；local 支持 Ollama 与 OpenAI 兼容接口，含工具调用、图片输入、思考强度 |
+| 官方导出包导入 | v1.13.2 | 直接导入 DeepSeek 官网导出的对话数据包 |
+| 设置「关于」页 | v1.14.1 | 显示应用名、版本号、仓库/更新日志链接、快捷键与存储说明 |
+| 欢迎页 128 句预设 | v1.14.1 | 中英各 128 条，进入欢迎页随机展示 4 条 |
+| 工具执行中可打断 | v1.14.1 | 工具往返期间按钮保持停止态，停止后不会留下残缺 `tool_calls` 导致下一轮 400 |
+| 开关分层 | v1.14.2 | 设置页决定「能不能用」（分组可覆盖全局），发送框按钮决定「这次要不要用」；能力闸门不可被会话突破 |
+| 峰谷查询 `peak_status` | v1.14.3 | 查当前峰/谷、计价规则与下次切换；版本号同时改为后端唯一真源 |
+
 ---
 
 ## 3. 目录结构
@@ -337,12 +355,12 @@ deepseek-chatbox/
 ├─ data/                   运行时生成：设置 / 对话 / 附件 / 备份
 ├─ package.json
 ├─ 启动.bat                纯 ASCII + CRLF（chcp 65001 让程序中文日志正常显示），双击即用（源码版）
-├─ DeepSeekChatBox-portable.zip   便携版压缩包（36.7 MB）
+├─ DeepSeekChatBox-portable.zip   便携版压缩包（38.1 MB）
 ├─ portable/
 │  ├─ sea-main.cjs         便携版入口（SEA / 源码双模式，资源从内嵌 blob 读）
 │  ├─ build.mjs            构建脚本：收集 public → blob → 注入 node.exe
 │  └─ dist/
-│     ├─ DeepSeekChatBox.exe      单文件便携版（98.9 MB）
+│     ├─ DeepSeekChatBox.exe      单文件便携版（102.9 MB）
 │     └─ 使用说明.txt             给最终用户的说明（UTF-8 BOM + CRLF）
 ├─ public/
 │  ├─ index.html           结构 + 图标 sprite + 内联 wordmark
@@ -358,6 +376,12 @@ deepseek-chatbox/
 │  ├─ js/branches.js       消息分支树（parentId / selectedChildId，移植官方实现）
 │  ├─ js/i18n.js           中/英文案
 │  ├─ js/brand.js          鲸鱼图形
+│  ├─ js/version.js        应用元信息 + 版本号读取（GET /api/version）
+│  ├─ js/prompts.js        欢迎页预设（中英各 128 条）
+│  ├─ js/eval-tool.js      浏览器端 JS 执行工具
+│  ├─ js/import-official.js 官方导出包导入
+│  ├─ js/tool-search.js    工具检索（BM25 + 中文 2-gram + 别名）
+│  ├─ js/holiday.js        节假日查询（峰谷自动判断）
 │  ├─ assets/              logo-wordmark.svg / logo-whale.svg
 │  └─ vendor/              marked · highlight.js · katex(+fonts) · mermaid
 ```
@@ -446,6 +470,7 @@ deepseek-chatbox/
 |---|---|
 | `Enter` | 发送 |
 | `Shift + Enter` | 换行 |
+| `Ctrl / ⌘ + Enter` | 换行（主输入框与编辑框一致，不会被当成发送） |
 | `Ctrl / ⌘ + K` | 新建对话 |
 | `Esc` | 关闭弹层 / 停止生成 |
 
@@ -484,8 +509,12 @@ deepseek-chatbox/
 ## 9. 版本号规则
 
 **网页版（本地 Web + WorkBuddy 专版）只有 `vMAJOR.MINOR.PATCH`，不带构建号。**
-修 bug 发版时 `PATCH + 1`，例：`v1.12.4.build87` → `v1.12.5`（历史 tag 保留原名，不追溯）。
+修 bug 发版时 `PATCH + 1`，例：`v1.12.5` → `v1.12.6`（历史 tag 保留原名，不追溯）。
+
+**版本号真源在后端**：各自 `package.json` 的 `version` 字段（便携版用 `portable/sea-main.cjs` 的内联 `VERSION`）。
+前端不再硬编码，运行时通过 `GET /api/version` 读取（见 `public/js/version.js` 的 `loadAppVersion()`）；
+`/api/health` 也返回 `version`。
 
 `vX.Y.Z.buildN` 那套累计构建计数**只属于 iOS 原生仓库**（`deepseek-chatbox-cpp`），
-口径见该仓库 `docs/版本号与构建计数.md`。根目录的 `build-count.json` 是网页版历史留档，
-`release.py` 已不再读写它；`--test` 只影响 Release 标题的「（测试构建）」标注。
+口径见该仓库 `docs/版本号与构建计数.md`。根目录 `build-count.json` 已删除（历史留档停在 88，`release.py` 不读写）；
+`--test` 只影响 Release 标题的「（测试构建）」标注。
