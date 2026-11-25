@@ -3,6 +3,7 @@ import { h, $, download, toast } from './util.js';
 import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, uploadAttachment, clearAllConversations, meta as storeMeta, saveConversationsNow, flushNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
 import { isZipFile, importOfficialZip } from './import-official.js';
 import { t } from './i18n.js';
+import { APP_VERSION, APP_NAME, APP_REPO, APP_RELEASES } from './version.js';
 import { appConfirm } from './dialog.js';
 import { listModels, cachedModels } from './api.js';
 
@@ -53,6 +54,35 @@ function section(title, items) {
   ]);
 }
 
+function aboutTab() {
+  const link = (href, label) => h('a', { href, target: '_blank', rel: 'noopener noreferrer', text: label });
+  const row = (k, v) => h('div', { class: 'about-row' }, [h('b', { text: k }), h('span', { text: v })]);
+  return [
+    h('div', { class: 'set-section' }, [
+      h('div', { class: 'set-section-title', text: t('aboutTitle') }),
+      h('div', { class: 'about-brand' }, [
+        h('b', { text: APP_NAME }),
+        h('span', { class: 'about-version', text: 'v' + APP_VERSION }),
+      ]),
+      h('div', { class: 'help', text: t('aboutDesc') }),
+      h('div', { class: 'about-links' }, [
+        link(APP_REPO, t('aboutRepo')),
+        link(APP_RELEASES, t('aboutReleases')),
+      ]),
+    ]),
+    h('div', { class: 'set-section' }, [
+      h('div', { class: 'set-section-title', text: t('aboutShortcuts') }),
+      h('div', { class: 'help', text: t('aboutShortcutsBody') }),
+    ]),
+    h('div', { class: 'set-section' }, [
+      h('div', { class: 'set-section-title', text: t('aboutStorage') }),
+      h('div', { class: 'help', text: t('aboutStorageBody') }),
+      row(t('aboutVersion'), 'v' + APP_VERSION),
+      row(t('aboutBuild'), t('aboutBuildBody')),
+    ]),
+  ];
+}
+
 export function openSettings({ onChange } = {}) {
   if (overlay) return;
   let tab = 'general';
@@ -95,12 +125,14 @@ export function openSettings({ onChange } = {}) {
       tabBtn('model', t('tabModel'), 'i-brain'),
       tabBtn('gen', t('tabGen'), 'i-wrench'),
       tabBtn('data', t('tabData'), 'i-folder'),
+      tabBtn('about', t('tabAbout'), 'i-globe'),
     );
     body.replaceChildren();
     if (tab === 'general') body.append(...generalTab());
     if (tab === 'model') body.append(...modelTab());
     if (tab === 'gen') body.append(...genTab());
     if (tab === 'data') body.append(...dataTab());
+    if (tab === 'about') body.append(...aboutTab());
   }
 
   function generalTab() {

@@ -9,6 +9,7 @@ import {
   exportAllData,
 } from './store.js';
 import { setLang, applyStatic, t, getLang } from './i18n.js';
+import { welcomeSamples } from './prompts.js';
 import { renderMarkdown, hydrateMermaid, toPlainText, resetMermaidTheme } from './markdown.js';
 import {
   cachedModels, modelInfo, supportsVision, listModels, getBalance, uploadFile,
@@ -23,7 +24,8 @@ import { WHALE_PATHS } from './brand.js';
 
 const state = {
   currentId: null,
-  streaming: false,
+  streaming: false,    // 仅在读流时为 true（光标 / 徽标）
+  busy: false,         // 整个 runStream 生命周期：含工具执行；按钮形态与发送守卫只看它
   stopped: false,      // 用户点了停止：工具轮/工具执行循环据此尽早退出
   followBottom: true,  // 是否跟随输出滚动：用户手动上翻时置 false
   controller: null,
@@ -494,7 +496,7 @@ function bulkToggleAll() {
 
 /* ------------------------------ 会话视图 ------------------------------ */
 function openConversation(id) {
-  if (state.streaming) stopStreaming();
+  if (state.busy) stopStreaming();
   state.currentId = id;
   state.followBottom = true;   // 切会话总是落在最新一条
   syncRoute(true);          // 切会话记一条历史，支持浏览器后退
@@ -505,7 +507,7 @@ function openConversation(id) {
 
 function newChat() {
   if (state.selection) exitSelection();
-  if (state.streaming) stopStreaming();
+  if (state.busy) stopStreaming();
   state.currentId = null;
   state.followBottom = true;
   syncRoute(true);          // 新对话回根路径，记一条历史
@@ -588,7 +590,7 @@ function applyRouteFromHistory() {
   if (id === state.currentId) return;
   suppressPopRoute = true;
   try {
-    if (state.streaming) stopStreaming();
+    if (state.busy) stopStreaming();
     state.currentId = id;
     state.followBottom = true;
     renderSidebar();
@@ -665,9 +667,7 @@ function welcomeView() {
     wrap.append(banner);
   }
 
-  const samples = getLang() === 'zh'
-    ? ['解释一下 Transformer 的注意力机制', '帮我写一个批量重命名的脚本', '总结这个链接的要点：https://api-docs.deepseek.com/zh-cn/', '把这段话改写成更正式的邮件']
-    : ['Explain attention in Transformers', 'Write a batch rename script', 'Summarize https://api-docs.deepseek.com/', 'Rewrite this as a formal email'];
+  const samples = welcomeSamples(getLang(), 4);
   const chips = h('div', { class: 'welcome-chips' }, samples.map((s) => {
     const b = h('button', { class: 'chip', type: 'button', text: s });
     b.addEventListener('click', () => { els.prompt.value = s; autoGrow(); updateComposerState(); els.prompt.focus(); });
@@ -1628,10 +1628,11 @@ function iconEl(id, cls = '') {
 /* ------------------------------ 发送流程 ------------------------------ */
 function updateComposerState() {
   const hasText = els.prompt.value.trim().length > 0 || state.attachments.some((a) => a.ready !== false);
-  els.send.disabled = !state.streaming && !hasText;
-  els.send.classList.toggle('stop', state.streaming);
-  els.send.innerHTML = `<svg class="icon"><use href="#${state.streaming ? 'i-stop' : 'i-arrow-up'}"/></svg>`;
-  els.send.title = state.streaming ? t('stop') : t('send');
+  // 工具执行阶段也是「忙」：必须显示停止按钮，且点发送要能打断，不能当成新消息发出
+  els.send.disabled = !state.busy && !hasText;
+  els.send.classList.toggle('stop', state.busy);
+  els.send.innerHTML = `<svg class="icon"><use href="#${state.busy ? 'i-stop' : 'i-arrow-up'}"/></svg>`;
+  els.send.title = state.busy ? t('stopGen') : t('send');
   const e = eff();
   els.think.classList.toggle('on', Boolean(e.thinking));
   els.think.setAttribute('aria-pressed', String(Boolean(e.thinking)));
@@ -1651,14 +1652,14 @@ function updateComposerState() {
   els.effortLabel.textContent = effortName || (e.effort || 'high');
   els.modelName.textContent = modelInfo(e.model).name || e.model;
   els.mockBadge.classList.toggle('hidden', !settings.mock);
-  els.streamBadge.classList.toggle('hidden', !state.streaming);
+  els.streamBadge.classList.toggle('hidden', !state.busy);
   els.keyHint.textContent = hasApiKey() ? '' : (settings.mock ? '演示' : t('noKeyBalance'));
 }
 
 async function sendMessage({ continueMode = false, prefix = '' } = {}) {
   // 停止请求还没走完（工具执行无法中断）时再点一次，不能顺手当成「发送新消息」
-  if (state.streaming || state.stopped) {
-    if (state.streaming) stopStreaming();
+  if (state.busy || state.stopped) {
+    if (state.busy && !state.stopped) stopStreaming();
     return;
   }
   const text = els.prompt.value.trim();
@@ -1735,6 +1736,8 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
   }
 
   state.stopped = false;
+  state.busy = true;
+  state.busy = true;
   state.streaming = true;
   state.controller = new AbortController();
   updateComposerState();
@@ -1883,7 +1886,35 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
     if (state.stopped && cur) {
       cur.aborted = true;
       if (!cur.content && !cur.reasoning && !cur.error) cur.error = t('aborted');
+      // 关键：模型已发 tool_calls 但工具只执行了一部分时，必须给每个 call 补一条 tool 消息。
+      // 否则下一次请求会被 DeepSeek 判为 400：assistant 的 tool_calls 缺少对应 tool 结果。
+      const calls = cur.toolCalls || [];
+      if (calls.length) {
+        const results = cur.toolResults || [];
+        const doneIds = new Set(results.map((r) => r.id));
+        const partial = calls.filter((tc) => !tc?.id || !doneIds.has(tc.id));
+        if (partial.length && !results.length) {
+          // 读流阶段就被打断、工具还没开始执行：整段丢弃，避免残缺 call 污染下一轮
+          delete cur.toolCalls;
+          delete cur.toolResults;
+        } else {
+          cur.toolCalls = calls.filter((tc) => Boolean(tc?.id));
+          for (const tc of partial) {
+            if (!tc?.id) continue;
+            const name = tc.function?.name || 'unknown';
+            appendBranch(conv, chainTail(conv)?.id ?? null, [{
+              id: uid('t'), role: 'tool', tool_call_id: tc.id, name,
+              content: t('aborted'), toolOk: false, createdAt: Date.now(),
+            }]);
+            (cur.toolResults ||= []).push({
+              id: tc.id, name, args: tc.function?.arguments || '{}',
+              content: t('aborted'), ok: false,
+            });
+          }
+        }
+      }
     }
+    state.busy = false;
     state.streaming = false;
     state.controller = null;
     state.stopped = false;
@@ -2038,12 +2069,13 @@ function renderToolCardsLive(refs, assistant) {
 }
 
 function stopStreaming() {
-  if (!state.streaming && !state.stopped) return;
+  if (!state.busy && !state.stopped) return;
   // abort 只对「正在读流」有效；工具执行阶段是普通 HTTP 请求（可能几秒到几十秒），
   // 所以还要立一个 stopped 标志，让工具轮/工具循环尽早退出，不能只 abort 了事。
   state.stopped = true;
   state.controller?.abort();
-  // 立刻把按钮切回「发送」并收掉光标：否则工具执行期间点停止毫无反馈，看着像点不动
+  // 只停读流，不把 busy 清掉：按钮保持「停止」直到 runStream 真正收尾。
+  // 否则工具还在跑、按钮却变回发送，用户再发消息就会留下残缺 tool_calls 导致 400。
   state.streaming = false;
   updateComposerState();
   document.querySelectorAll('.msg .md.cursor').forEach((n) => n.classList.remove('cursor'));
@@ -2067,6 +2099,7 @@ function regenerate(m) {
     serverToolCalls: [], model: settings.model, createdAt: Date.now(), streaming: true,
   };
   appendBranch(conv, m.parentId ?? null, [assistant]);
+  state.busy = true;
   state.streaming = true;
   state.controller = new AbortController();
   updateComposerState();
@@ -2087,6 +2120,7 @@ function continueGeneration(m) {
   normalizeConv(conv);
   cutAfter(conv, m.id);
   m.streaming = true;
+  state.busy = true;
   state.streaming = true;
   state.controller = new AbortController();
   updateComposerState();
@@ -3003,11 +3037,20 @@ function wire() {
   els.prompt.addEventListener('blur', () => els.shell.classList.remove('focused'));
   els.prompt.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' || e.isComposing) return;
-    // 只有裸 Enter 发送；Shift/Ctrl/⌘/Alt+Enter 一律换行
-    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    // 裸 Enter 发送；Shift/Alt+Enter 交给浏览器默认换行；
+    // Ctrl/⌘+Enter 必须显式插入 \n —— 多数浏览器对 Ctrl+Enter 不产生换行输入，
+    // 只 return 会被吞掉（这正是编辑框修好后主框仍不行的原因）。
+    if (e.ctrlKey || e.metaKey) {
+      e.preventDefault();
+      const pos = els.prompt.selectionStart;
+      els.prompt.setRangeText('\n', pos, els.prompt.selectionEnd, 'end');
+      els.prompt.dispatchEvent(new Event('input', { bubbles: true }));
+      return;
+    }
+    if (e.shiftKey || e.altKey) return;
     e.preventDefault();
     if (!els.send.disabled) sendMessage();
-    else if (state.streaming) stopStreaming();
+    else if (state.busy) stopStreaming();
   });
   els.prompt.addEventListener('paste', (e) => {
     const items = Array.from(e.clipboardData?.items || []);
@@ -3027,7 +3070,7 @@ function wire() {
   });
 
   els.send.addEventListener('click', () => {
-    if (state.streaming) stopStreaming();
+    if (state.busy) stopStreaming();
     else sendMessage();
   });
 
@@ -3143,7 +3186,7 @@ function wire() {
     if (e.key === 'Escape') {
       closeMenu();
       if (state.selection) { exitSelection(); return; }
-      if (state.streaming) stopStreaming();
+      if (state.busy) stopStreaming();
     }
   });
 
@@ -3157,7 +3200,7 @@ function wire() {
 
   window.addEventListener('beforeunload', (e) => {
     flushNow();
-    if (state.streaming) {
+    if (state.busy) {
       e.preventDefault();
       e.returnValue = '';
     }

@@ -119,6 +119,14 @@ def bump(ver: str) -> None:
         write(pkg, n)
         print(OK, 'package.json')
 
+    vjs = os.path.join(ROOT, 'public', 'js', 'version.js')
+    if os.path.exists(vjs):
+        s = read(vjs)
+        n = re.sub(r"export const APP_VERSION = '[^']*';", f"export const APP_VERSION = '{ver}';", s, count=1)
+        if n != s:
+            write(vjs, n)
+            print(OK, 'public/js/version.js')
+
     sea = os.path.join(ROOT, 'portable', 'sea-main.cjs')
     if os.path.exists(sea):
         s = read(sea)

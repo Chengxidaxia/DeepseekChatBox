@@ -2737,3 +2737,13 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 }
 .input-row input { flex: 1 1 auto; min-width: 0; }
 .input-row .btn { flex: 0 0 auto; }
+/* 关于页（v1.14.1） */
+.about-brand { display:flex; align-items:baseline; gap:10px; margin:6px 0 8px; }
+.about-brand b { font-size:18px; }
+.about-version { color:var(--brand-primary); font-size:13px; font-weight:600; }
+.about-links { display:flex; gap:16px; margin-top:10px; }
+.about-links a { color:var(--brand-primary); text-decoration:none; font-size:13px; }
+.about-links a:hover { text-decoration:underline; }
+.about-row { display:flex; gap:12px; font-size:13px; line-height:24px; color:var(--label-secondary); }
+.about-row b { flex:0 0 auto; color:var(--label-primary); font-weight:600; }
+
