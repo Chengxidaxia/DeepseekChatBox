@@ -1475,6 +1475,7 @@ body[data-theme='dark'] .input-shell { box-shadow: none; }
 .usage-seg { display: block; height: 100%; transition: width .18s ease-out; }
 /* 分段配色（浅/深色通用，中等明度） */
 .seg-sys { background: #98a1b3; }
+.seg-tools { background: #e0a03a; }
 .seg-hist { background: #5b7cfa; }
 .seg-input { background: #3aa99a; }
 .seg-tool { background: #a78bfa; }

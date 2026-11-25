@@ -12,7 +12,7 @@ import { setLang, applyStatic, t, getLang } from './i18n.js';
 import { renderMarkdown, hydrateMermaid, toPlainText, resetMermaidTheme } from './markdown.js';
 import {
   cachedModels, modelInfo, supportsVision, listModels, getBalance, uploadFile,
-  synthesize, transcribe, buildPayload, streamChat, buildReminder,
+  synthesize, transcribe, buildPayload, streamChat, buildReminder, measureRequest,
   getToolDefinitions, callTool,
 } from './api.js';
 import { openSettings } from './settings.js';
@@ -526,6 +526,15 @@ function currentConversation() {
 
 // 每个会话上一轮下发过的工具名（有序）。tools 保持不变 → 请求前缀能连续命中缓存。
 const stickyToolsByConv = new Map();
+
+// 工具定义缓存：上下文用量面板要按真实请求统计「工具定义」那段的 token，
+// 面板是同步渲染的，所以启动时就先拉一份（失败不影响发送，发送时会再拉）。
+let toolDefsCache = [];
+function prefetchToolDefs() {
+  getToolDefinitions()
+    .then((d) => { toolDefsCache = d || []; updateCtxChip(true); })
+    .catch(() => {});
+}
 
 const APP_TITLE = 'Deepseek ChatBox';
 /** 顶栏左端显示当前会话标题（官方 chat 的做法）；欢迎页没有标题就留空 */
@@ -1199,15 +1208,20 @@ function msgTokens(m) {
 }
 
 const CTX_STEPS_K = [32, 64, 128, 256, 512, 1024];
+/** 分段顺序 = 请求体里的真实出现顺序。
+ *  messages 先、tools 后（payload 里 tools 是挂在 messages 之后的兄弟字段），
+ *  所以「工具定义」排在对话之后 —— 前面那段对话是不随工具变化的前缀，照样能命中缓存。 */
 const CTX_SEGS = [
   ['sys', '系统提示', 'seg-sys'],
   ['hist', '历史对话', 'seg-hist'],
-  ['input', '本轮输入', 'seg-input'],
   ['tool', '工具结果', 'seg-tool'],
+  ['input', '本轮输入', 'seg-input'],
+  ['tools', '工具定义', 'seg-tools'],
 ];
 
 /** 汇总当前会话的上下文占用与 token 统计。
- *  有最后一条 usage 时用它做精确锚点（prompt+completion），分段按比例缩放；否则全按估算。 */
+ *  分段来自 measureRequest（与发送共用 buildPayload，按真实请求体顺序统计）；
+ *  有最后一条 usage 时用它做精确锚点（prompt+completion），分段按比例缩放。 */
 function convUsage() {
   const conv = currentConversation();
   const msgs = conv ? conv.messages : [];
@@ -1221,25 +1235,50 @@ function convUsage() {
     const u = msgs[i].role === 'assistant' ? msgs[i].usage : null;
     if (u && u.prompt_tokens) { anchorIdx = i; break; }
   }
-  let lastUser = -1;
-  for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i].role === 'user') { lastUser = i; break; }
 
-  const seg = { sys: estimateTokens(e.systemPrompt || '') + 160, hist: 0, input: 0, tool: 0 };
-  msgs.forEach((m, i) => {
-    const tk = msgTokens(m);
-    if (m.role === 'tool') seg.tool += tk;
-    else if (m.role === 'user') { if (i === lastUser) seg.input += tk; else seg.hist += tk; }
-    else seg.hist += tk;
-  });
+  // 真实请求构成：和发送走同一套 buildPayload（含 tools 定义、reasoning_content、latest_reminder）。
+  // 历史必须用「当前选中的分支链」，不能拿 conv.messages —— 那里还躺着没被选中的旧版本回答。
+  const chain = conv ? visibleMessages(conv) : [];
+  const lastUserMsg = [...chain].reverse().find((m) => m.role === 'user');
+  const usedTools = [];
+  const foundTools = [];
+  for (const m of chain) {
+    for (const tc of m.toolCalls || []) if (tc?.function?.name) usedTools.push(tc.function.name);
+    for (const rec of m.toolResults || []) {
+      if (rec?.name !== 'find_tool') continue;
+      const data = typeof rec.data === 'string' ? (() => { try { return JSON.parse(rec.data); } catch { return null; } })() : rec.data;
+      if (Array.isArray(data?.names)) foundTools.push(...data.names);
+    }
+  }
+  let seg;
+  try {
+    seg = measureRequest(chain, {
+      settings: e,
+      extraTools: toolDefsCache,
+      toolQuery: [lastUserMsg?.content || '', ...(lastUserMsg?.attachments || []).map((a) => a.text || '')].join(' '),
+      usedTools,
+      stickyTools: conv ? (stickyToolsByConv.get(conv.id) || []) : [],
+      foundTools,
+    }).seg;
+  } catch {
+    // 测量失败（工具定义还没拉到等）就退回最粗的估算，面板不能因此打不开
+    seg = { sys: estimateTokens(e.systemPrompt || '') + 160, tools: 0, hist: 0, tool: 0, input: 0 };
+    msgs.forEach((m, i) => {
+      const tk = msgTokens(m);
+      if (m.role === 'tool') seg.tool += tk;
+      else if (m.role === 'user') { if (i === msgs.length - 1) seg.input += tk; else seg.hist += tk; }
+      else seg.hist += tk;
+    });
+  }
 
   let after = 0;
   if (anchorIdx >= 0) for (let i = anchorIdx + 1; i < msgs.length; i++) after += msgTokens(msgs[i]);
   const exact = anchorIdx >= 0;
+  const estSum = seg.sys + seg.tools + seg.hist + seg.tool + seg.input;
   const used = exact
     ? (msgs[anchorIdx].usage.prompt_tokens || 0) + (msgs[anchorIdx].usage.completion_tokens || 0) + after
-    : seg.sys + seg.hist + seg.input + seg.tool;
+    : estSum;
 
-  const estSum = seg.sys + seg.hist + seg.input + seg.tool;
   const scale = estSum > 0 ? used / estSum : 0;
 
   const tok = { prompt: 0, completion: 0, hit: 0, miss: 0, think: 0, cost: 0, answers: 0, calls: 0 };
@@ -1431,10 +1470,11 @@ function openUsagePanel(anchor) {
     const p = d.maxCtx ? Math.min(100, (d.used / d.maxCtx) * 100) : 0;
     pctEl.textContent = p.toFixed(p >= 10 ? 0 : 1) + '%';
     usedEl.textContent = `已使用 ${fmtTok(d.used)} / ${fmtWindow(d.maxCtx)}`;
-    barEl.replaceChildren(...d.segs.map((s) => {
+    // 只有真正占了 token 的段才画进条里：0 宽的段不画，免得留下 2px 的空隙
+    barEl.replaceChildren(...d.segs.filter((s) => s.tokens > 0).map((s) => {
       const w = d.maxCtx ? Math.max(0, (s.tokens / d.maxCtx) * 100) : 0;
       const el = h('i', { class: 'usage-seg ' + s.cls });
-      el.style.width = w > 0 ? Math.max(w, 0.6) + '%' : '0%';
+      el.style.width = Math.max(w, 0.6) + '%';
       el.title = `${s.label} 约 ${fmtTok(s.tokens)} tokens`;
       return el;
     }));
@@ -1612,7 +1652,11 @@ function updateComposerState() {
 }
 
 async function sendMessage({ continueMode = false, prefix = '' } = {}) {
-  if (state.streaming) { stopStreaming(); return; }
+  // 停止请求还没走完（工具执行无法中断）时再点一次，不能顺手当成「发送新消息」
+  if (state.streaming || state.stopped) {
+    if (state.streaming) stopStreaming();
+    return;
+  }
   const text = els.prompt.value.trim();
   if (!text && !state.attachments.length && !continueMode) return;
   if (!hasApiKey() && !settings.mock) {
@@ -1682,7 +1726,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
   let extraTools = [];
   // 本地联网模式：搜索/读链接本身也要靠本地 function 实现，所以这几个开关任一开启都得拿定义
   if (es.localTools || es.search || es.readUrl) {
-    try { extraTools = await getToolDefinitions(); }
+    try { extraTools = await getToolDefinitions(); toolDefsCache = extraTools; }
     catch (e) { toast('本地工具加载失败：' + e.message); }
   }
 
@@ -3154,6 +3198,7 @@ async function boot() {
   }
 
   mountCtxChip();
+  prefetchToolDefs();   // 用量面板要按真实请求统计 tools 段
   renderSidebar();
   renderChat();
   syncRoute();              // 首屏规范地址栏：欢迎页=根路径；有会话=/a/chat/s/<uuid>

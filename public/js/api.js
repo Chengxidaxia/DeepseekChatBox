@@ -368,6 +368,52 @@ export function buildPayload(history, {
   };
 }
 
+/**
+ * 按「真实会发出去的请求」量各段 token —— 直接调 buildPayload 造一遍 payload，再顺着
+ * 请求体的顺序数，而不是像以前那样另写一份估算（那份漏了 tools 定义、reasoning_content、
+ * latest_reminder，还把「本轮输入」错排到工具结果前面）。
+ *
+ * 请求体里 messages 在前、tools 在后（payload.tools 是挂在 messages 之后的兄弟字段），
+ * 所以顺序是：系统提示 → 历史对话 → 工具结果 → 本轮输入 → 工具定义。
+ * 工具定义放最后还有个副作用上的好处：它是最容易变的一段，排在队尾不打断前面那段缓存前缀。
+ */
+export function measureRequest(history, opts = {}) {
+  // stream / 自动标题不影响 messages 与 tools，这里固定关掉，避免面板测量顺带做别的事
+  const built = buildPayload(history, { ...opts, stream: false, wantTitle: false });
+  const p = built.payload || {};
+  const list = Array.isArray(p.messages) ? p.messages : [];
+  const seg = { sys: 0, tools: 0, hist: 0, tool: 0, input: 0 };
+
+  let lastUser = -1;
+  for (let i = list.length - 1; i >= 0; i--) if (list[i].role === 'user') { lastUser = i; break; }
+  // 紧挨在本轮 user 前面的 latest_reminder 是为这条消息加的，算本轮输入
+  let inputStart = lastUser;
+  while (inputStart > 0 && list[inputStart - 1].role === 'latest_reminder') inputStart--;
+  if (lastUser < 0) inputStart = list.length;   // 没有 user 消息：全部按历史算
+
+  list.forEach((m, i) => {
+    const tk = apiMsgTokens(m);
+    if (m.role === 'system') seg.sys += tk;
+    else if (i >= inputStart) seg.input += tk;
+    else if (m.role === 'tool') seg.tool += tk;
+    else seg.hist += tk;
+  });
+
+  if (Array.isArray(p.tools) && p.tools.length) {
+    // tools 是随请求体一起发的 JSON，同样进 prompt；每条定义还有固定结构开销
+    seg.tools = estimateTokens(JSON.stringify(p.tools)) + p.tools.length * 4;
+  }
+
+  return {
+    seg,
+    total: seg.sys + seg.tools + seg.hist + seg.tool + seg.input,
+    messages: list.length,
+    toolNames: built.toolNames || [],
+    hasTools: built.hasTools,
+    officialWeb: built.webMode === 'official',
+  };
+}
+
 /** 发送并解析 SSE；onEvent 收到 {type, ...} */
 export async function streamChat(payload, { signal, onEvent }) {
   const root = apiRoot();
