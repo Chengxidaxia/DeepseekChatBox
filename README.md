@@ -27,7 +27,7 @@ node server.mjs
 deepseek-chatbox/data/            # 源码版
 DeepSeekChatBox.exe
 DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
-├─ settings.json        设置 + API Key（明文，仅本机）
+├─ settings.json        设置 + API Key（DPAPI 密文字段 apiKeyEnc，绑定当前 Windows 用户）
 ├─ conversations.json   全部对话（含思考、引用、用量）
 ├─ ui.json              界面状态（侧栏收起等）
 ├─ attachments/         上传的图片（按 id 命名 + index.json）
@@ -407,7 +407,10 @@ deepseek-chatbox/
 
 ## 5. 注意事项
 
-- **API Key 安全**：明文写在 `data/settings.json`（你自己的机器/ U 盘上），代理不打印、不外传；`GET /api/store` 只返回掩码 `sk-xx…abcd`。公用电脑用完请点设置里的「清除」。
+- **API Key 安全**：用 **Windows DPAPI**（CurrentUser 范围，底层 `CryptProtectData`）加密后存 `data/settings.json` 的 `apiKeyEnc`，明文只在内存中。文件被拷到别的机器 / 别的 Windows 账户、或误传进备份与压缩包时只有密文可看。代理不打印、不外传；`GET /api/store` 只返回掩码 `sk-xx…abcd`。
+  - 纯 Node 零依赖：通过系统自带 PowerShell 调 `System.Security.Cryptography.ProtectedData`；便携版 SEA 同样生效。
+  - 首次读到旧版明文 `apiKey` 会自动加密迁移；解密失败（换账户/换机）会提示重新填写。
+  - 非 Windows 或 DPAPI 调用失败时回退明文并打警告。**边界**：DPAPI 绑定的是 Windows 用户，同一用户下能执行代码的程序仍可调 DPAPI 解密——它防的是“文件被读走/拷走”，不防“同用户恶意程序”。公用电脑用完请点设置里的「清除」。
 - **数据即文件**：删 `data/` 等于清空所有数据（含 Key）；迁移直接拷整个文件夹。
 - **峰谷定价**（2026-11 官方表）：模型按「百万 tokens」计费，分空闲/高峰两档，**空闲价是高峰价的一半**。
   高峰 = 周一至周五 09:00-12:00、14:00-18:00（北京时间）；其余时段、周末、法定节假日均为空闲。

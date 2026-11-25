@@ -1,6 +1,6 @@
 /* DeepSeek Chatbox — 服务端存储核心（纯 CJS，无依赖；源码版与便携版共用）
  * 所有数据落在 dataDir 下：
- *   settings.json       设置（含 API Key，明文，仅本机）
+ *   settings.json       设置（API Key 用 Windows DPAPI 加密，绑定当前 Windows 用户）
  *   conversations.json  全部对话
  *   ui.json             界面状态
  *   attachments/        上传的图片等附件
@@ -78,6 +78,50 @@ function migratePrices(p) {
   return out;
 }
 
+/* -------------------- API Key 静态加密（Windows DPAPI） --------------------
+ * 通过系统自带 PowerShell 调 System.Security.Cryptography.ProtectedData
+ * （底层 CryptProtectData，CurrentUser 范围），纯 Node、零 npm 依赖。
+ * 密文只能被同一个 Windows 用户解开：文件被拷到别的机器/别的账户、或误传进
+ * 备份与压缩包时，泄漏的只是密文。非 Windows 或调用失败时回退明文并告警。
+ */
+const KEY_ENC_PREFIX = 'dpapi:';
+let _dpapiOk = null;
+
+function dpapiSupported() {
+  if (process.platform !== 'win32') return false;
+  if (_dpapiOk !== null) return _dpapiOk;
+  try {
+    const r = require('node:child_process').spawnSync('powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', '$PSVersionTable.PSVersion.Major'],
+      { encoding: 'utf8', timeout: 10000, windowsHide: true });
+    _dpapiOk = r.status === 0 && /^\d+/.test(String(r.stdout || '').trim());
+  } catch { _dpapiOk = false; }
+  return _dpapiOk;
+}
+
+function dpapiTransform(mode, b64) {
+  const body = mode === 'protect'
+    ? "$b=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim());$e=[Security.Cryptography.ProtectedData]::Protect($b,$null,'CurrentUser');[Console]::Out.Write([Convert]::ToBase64String($e))"
+    : "$b=[Convert]::FromBase64String([Console]::In.ReadToEnd().Trim());$d=[Security.Cryptography.ProtectedData]::Unprotect($b,$null,'CurrentUser');[Console]::Out.Write([Convert]::ToBase64String($d))";
+  const script = "$ErrorActionPreference='Stop';Add-Type -AssemblyName System.Security;" + body;
+  const r = require('node:child_process').spawnSync('powershell.exe',
+    ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+    { input: b64, encoding: 'utf8', timeout: 20000, windowsHide: true });
+  if (r.status !== 0 || !String(r.stdout || '').trim()) {
+    const err = String(r.stderr || 'powershell 返回空').trim().split(/\r?\n/).filter(Boolean).slice(-2).join(' ');
+    throw new Error(err.slice(0, 300));
+  }
+  return String(r.stdout).trim();
+}
+
+function keyEncrypt(text) {
+  return KEY_ENC_PREFIX + dpapiTransform('protect', Buffer.from(text, 'utf8').toString('base64'));
+}
+
+function keyDecrypt(stored) {
+  return Buffer.from(dpapiTransform('unprotect', String(stored).slice(KEY_ENC_PREFIX.length)), 'base64').toString('utf8');
+}
+
 function createStore({ dataDir, log = console.log }) {
   const dir = dataDir;
   const attachmentsDir = path.join(dir, 'attachments');
@@ -110,6 +154,36 @@ function createStore({ dataDir, log = console.log }) {
 
   let settings = Object.assign({}, DEFAULT_SETTINGS, readJson(settingsFile, {}));
   settings.reminder = Object.assign({}, DEFAULT_SETTINGS.reminder, settings.reminder || {});
+
+  /* API Key：启动时解密到内存（apiKeyEnc）；旧版明文自动迁移成 DPAPI 密文。 */
+  let apiKeyPlain = '';
+  (function initApiKey() {
+    const enc = settings.apiKeyEnc;
+    if (enc && String(enc).startsWith(KEY_ENC_PREFIX)) {
+      try {
+        apiKeyPlain = keyDecrypt(String(enc));
+      } catch (e) {
+        log('[store] API Key 解密失败（换过 Windows 账户/机器？），请在设置里重新填写：' + e.message);
+        apiKeyPlain = '';
+      }
+      return;
+    }
+    if (settings.apiKey) {
+      apiKeyPlain = String(settings.apiKey);
+      if (dpapiSupported()) {
+        try {
+          settings.apiKeyEnc = keyEncrypt(apiKeyPlain);
+          delete settings.apiKey;
+          writeAtomic(settingsFile, settings);
+          log('[store] API Key 已用 Windows DPAPI 加密（绑定当前用户）');
+        } catch (e) {
+          log('[store] API Key 加密失败，暂以明文保存：' + e.message);
+        }
+      } else {
+        log('[store] 本机不支持 DPAPI，API Key 以明文保存');
+      }
+    }
+  })();
   // 价格结构升级（旧版单档 → 峰谷双档），变了就写回磁盘，避免每次启动重复迁移
   const rawPrices = JSON.stringify(settings.prices || null);
   settings.prices = migratePrices(settings.prices);
@@ -165,8 +239,9 @@ function createStore({ dataDir, log = console.log }) {
     publicSettings() {
       const copy = JSON.parse(JSON.stringify(settings));
       delete copy.apiKey;
-      copy.hasKey = Boolean(settings.apiKey);
-      copy.keyPreview = maskKey(settings.apiKey);
+      delete copy.apiKeyEnc;
+      copy.hasKey = Boolean(apiKeyPlain);
+      copy.keyPreview = maskKey(apiKeyPlain);
       return copy;
     },
     rawSettings() {
@@ -176,6 +251,19 @@ function createStore({ dataDir, log = console.log }) {
       if (patch && typeof patch === 'object') {
         for (const [k, v] of Object.entries(patch)) {
           if (k === 'hasKey' || k === 'keyPreview') continue;
+          if (k === 'apiKey') {
+            const key = String(v || '').trim();
+            apiKeyPlain = key;
+            delete settings.apiKey;
+            delete settings.apiKeyEnc;
+            if (key && dpapiSupported()) {
+              try { settings.apiKeyEnc = keyEncrypt(key); }
+              catch (e) { settings.apiKey = key; log('[store] API Key 加密失败，暂以明文保存：' + e.message); }
+            } else if (key) {
+              settings.apiKey = key;
+            }
+            continue;
+          }
           if (k === 'reminder' || k === 'prices') {
             settings[k] = Object.assign({}, settings[k], v || {});
           } else {
@@ -187,7 +275,7 @@ function createStore({ dataDir, log = console.log }) {
       return this.publicSettings();
     },
     getApiKey() {
-      return settings.apiKey || process.env.DEEPSEEK_API_KEY || '';
+      return apiKeyPlain || process.env.DEEPSEEK_API_KEY || '';
     },
     getBaseUrl() {
       return settings.baseUrl || 'https://api.deepseek.com';
