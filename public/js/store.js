@@ -666,13 +666,39 @@ export function moveConversationToGroup(convId, groupId) {
 }
 
 /** 生效设置：全局 ← 分组 ← 会话，逐层覆盖 */
-export function effectiveSettings(conv) {
+/** 能力层：全局设置 ← 分组设置覆盖。决定「能不能用」，不含会话层。 */
+export function capabilitySettings(conv) {
   const g = conv && conv.groupId ? getGroup(conv.groupId) : null;
-  return {
-    ...settings,
-    ...(g && g.settings ? g.settings : {}),
-    ...(conv && conv.settings ? conv.settings : {}),
-  };
+  return { ...settings, ...(g && g.settings ? g.settings : {}) };
+}
+
+/**
+ * 能力闸门：设置页开关决定「能不能用」，会话层不得突破。
+ * 其余字段（thinking / search / readUrl / effort / model）会话层优先，能力层仅作默认值。
+ */
+const CAPABILITY_GATES = [
+  'mock', 'autoTitle', 'localTools', 'subAgentEnabled',
+  'cmdEnabled', 'evalEnabled', 'jsonMode', 'safety',
+];
+
+/**
+ * 生效设置 = 能力层 + 会话层。
+ * 能力层：全局设置，分组可覆盖（能不能用）
+ * 会话层：当前会话设置（发送框按钮写入），决定这次要不要用
+ * @param conv 会话对象
+ * @param sessionOverride 会话层覆盖（欢迎页尚未建会话时传草稿）
+ */
+export function effectiveSettings(conv, sessionOverride = null) {
+  const cap = capabilitySettings(conv);
+  const sess = sessionOverride || (conv && conv.settings) || {};
+  const out = { ...cap, ...sess };
+  for (const k of CAPABILITY_GATES) {
+    if (cap[k] === false) out[k] = false;
+  }
+  if (cap.reminder && cap.reminder.enabled === false) {
+    out.reminder = { ...(out.reminder || cap.reminder), enabled: false };
+  }
+  return out;
 }
 
 /** 当前会话是否有自定义设置（含所属分组） */

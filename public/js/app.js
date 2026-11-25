@@ -5,7 +5,7 @@ import {
   createConversation, updateConversation, deleteConversation, saveConversations, groupConversations,
   searchConversations, initStore, hasApiKey, uploadAttachment, attachmentUrl, flushNow,
   allGroups, getGroup, createGroup, updateGroup, deleteGroup, moveConversationToGroup,
-  effectiveSettings, hasCustomScope, isPeakNow, isPeakAt,
+  effectiveSettings, capabilitySettings, hasCustomScope, isPeakNow, isPeakAt,
   exportAllData,
 } from './store.js';
 import { setLang, applyStatic, t, getLang } from './i18n.js';
@@ -38,22 +38,24 @@ const state = {
   menuOnClose: null,
   menuAnchor: null,   // 当前菜单的锚点，用来判断「再点一次同一个按钮 = 收起」
   selection: null,   // Set<convId>：非 null 即处于多选态
+  draftToggles: {},  // 欢迎页（尚无会话）时发送框按钮的草稿，首次发言建会话时带入
 };
 
 /** 当前会话的生效设置（全局 ← 分组 ← 会话） */
 function eff() {
-  return effectiveSettings(currentConversation());
+  const conv = currentConversation();
+  return effectiveSettings(conv, conv ? null : state.draftToggles);
 }
 
-/** 修改一个生效设置：有自定义作用域就写当前会话，否则写全局 */
+/** 发送框按钮 = 会话层：只改当前会话（或欢迎页草稿），不动全局能力层 */
 function setEffective(key, value) {
   const conv = currentConversation();
-  if (conv && hasCustomScope(conv)) {
-    const next = { ...effectiveSettings(conv), [key]: value, custom: true };
+  if (conv) {
+    const next = { ...(conv.settings || {}), [key]: value };
     conv.settings = next;
     updateConversation(conv.id, { settings: next });
   } else {
-    saveSettings({ [key]: value });
+    state.draftToggles = { ...state.draftToggles, [key]: value };
   }
   updateComposerState();
   renderChat();
@@ -510,6 +512,7 @@ function newChat() {
   if (state.busy) stopStreaming();
   state.currentId = null;
   state.followBottom = true;
+  state.draftToggles = {};
   syncRoute(true);          // 新对话回根路径，记一条历史
   state.attachments = [];
   renderTray();
@@ -601,8 +604,11 @@ function applyRouteFromHistory() {
   }
 }
 
-function ensureConversation() {  if (state.currentId && getConversation(state.currentId)) return getConversation(state.currentId);
-  const c = createConversation({ title: '' });
+function ensureConversation() {
+  if (state.currentId && getConversation(state.currentId)) return getConversation(state.currentId);
+  const draft = Object.keys(state.draftToggles || {}).length ? { ...state.draftToggles } : null;
+  const c = createConversation({ title: '', ...(draft ? { settings: draft } : {}) });
+  state.draftToggles = {};
   state.currentId = c.id;
   return c;
 }
@@ -1642,11 +1648,14 @@ function updateComposerState() {
   els.tools.setAttribute('aria-pressed', String(Boolean(e.localTools)));
   // 联网搜索 / 阅读链接 与本地工具在 API 侧互斥：只有「官方」联网模式才禁用本地工具
   const officialWeb = (e.searchMode === 'official') && (Boolean(e.search) || Boolean(e.readUrl));
-  els.tools.classList.toggle('disabled', officialWeb);
-  els.tools.disabled = officialWeb;
-  els.tools.title = officialWeb
-    ? '官方联网工具与本地工具不能同时使用（接口限制），可在设置 → 生成里切换为「本地联网」'
-    : '本地工具：余额 / 模型 / 时间 / 历史搜索 / 用量 / 联网搜索';
+  const toolsGated = capabilitySettings(currentConversation()).localTools === false;
+  els.tools.classList.toggle('disabled', officialWeb || toolsGated);
+  els.tools.disabled = officialWeb || toolsGated;
+  els.tools.title = toolsGated
+    ? '本地工具已在设置中关闭：设置 → 生成 → 本地工具（function calling）'
+    : officialWeb
+      ? '官方联网工具与本地工具不能同时使用（接口限制），可在设置 → 生成里切换为「本地联网」'
+      : '本地工具：余额 / 模型 / 时间 / 历史搜索 / 用量 / 联网搜索';
   els.effort.classList.toggle('hidden', !e.thinking);
   const effortName = { low: t('effortLow'), high: t('effortHigh'), max: t('effortMax') }[e.effort || 'high'];
   els.effortLabel.textContent = effortName || (e.effort || 'high');

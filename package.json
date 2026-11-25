@@ -1,6 +1,6 @@
 {
   "name": "deepseek-chatbox",
-  "version": "1.14.1",
+  "version": "1.14.2",
   "private": true,
   "type": "module",
   "description": "本地全功能 DeepSeek 对话客户端：服务端落盘、流式、思考模式、联网工具、文件解析、语音与 Markdown 渲染",

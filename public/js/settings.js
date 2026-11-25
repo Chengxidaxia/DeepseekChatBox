@@ -281,6 +281,7 @@ export function openSettings({ onChange } = {}) {
         h('div', { class: 'field' }, [
           switchRow('latest_reminder', t('reminderHelp'), settings.reminder.enabled, (v) => {
             saveSettings({ reminder: { ...settings.reminder, enabled: v } });
+            onChange?.({ reminder: true });
           }),
           h('div', { class: 'field-row', style: { marginTop: '10px' } }, [
             field(t('location'), loc),
@@ -380,7 +381,7 @@ export function openSettings({ onChange } = {}) {
       section('本地工具', [
         switchRow('本地工具（function calling）',
           '让模型可以调用本机工具：余额、模型、时间、历史、用量、联网搜索/抓取，以及计算、哈希、编解码、JSON、统计、UUID、随机数等小工具。密钥留在服务端。',
-          settings.localTools, (v) => saveSettings({ localTools: v })),
+          settings.localTools, (v) => { saveSettings({ localTools: v }); onChange?.({ localTools: true }); }),
         (() => {
           const seg = h('div', { class: 'seg' });
           for (const n of [4, 8, 16, 999]) {
@@ -577,9 +578,9 @@ export function openSettings({ onChange } = {}) {
         + '输出上限 2 万字符；<strong>同步死循环会卡住页面，关掉标签页重开即可</strong>。'),
       ]),
       section('输出与安全', [
-        switchRow(t('jsonMode'), t('jsonModeHelp'), settings.jsonMode, (v) => saveSettings({ jsonMode: v })),
-        switchRow(t('safety'), t('safetyHelp'), settings.safety, (v) => saveSettings({ safety: v })),
-        switchRow(t('autoTitle'), t('autoTitleHelp'), settings.autoTitle, (v) => saveSettings({ autoTitle: v })),
+        switchRow(t('jsonMode'), t('jsonModeHelp'), settings.jsonMode, (v) => { saveSettings({ jsonMode: v }); onChange?.({ jsonMode: true }); }),
+        switchRow(t('safety'), t('safetyHelp'), settings.safety, (v) => { saveSettings({ safety: v }); onChange?.({ safety: true }); }),
+        switchRow(t('autoTitle'), t('autoTitleHelp'), settings.autoTitle, (v) => { saveSettings({ autoTitle: v }); onChange?.({ autoTitle: true }); }),
         h('div', { class: 'field' }, [h('label', { text: t('docLayout') }), layoutSeg,
           h('div', { class: 'help', text: '仅上传 PDF / Word / PPT 时生效。图文混排会把文档中的图一起交给模型。' })]),
       ]),
