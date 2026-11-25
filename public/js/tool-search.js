@@ -56,6 +56,46 @@ const TOOL_KEYS = {
   cmd_run: ['执行命令', 'cmd', '运行命令', '本机命令', '跑命令', 'powershell', 'shell'],
 };
 
+/* 常驻工具里「高频、说明很长」的几个：下发时只留精简说明省 token。
+ * 关键：只改发给模型的 payload 副本；find_tool 的检索索引与返回仍读服务端完整定义。 */
+/** 常驻段里「高频只读」工具的固定顺序（见 api.js buildPayload） */
+export const COMPACT_STABLE_ORDER = ['get_balance', 'usage_stats', 'search_history', 'current_time'];
+
+const STABLE_COMPACT = {
+  get_balance: {
+    description: '查询当前 DeepSeek 账户余额。无参数。',
+    params: {},
+  },
+  usage_stats: {
+    description: '本地用量统计：对话数、消息数、输入/输出/缓存命中 tokens。无参数。',
+    params: {},
+  },
+  search_history: {
+    description: '按关键词搜索本地历史对话，返回标题、时间和命中片段。',
+    params: { query: '搜索关键词' },
+  },
+  current_time: {
+    description: '返回本机当前日期、时间、星期与时区。无参数。',
+    params: {},
+  },
+};
+
+function compactStableDef(d) {
+  const c = STABLE_COMPACT[d?.function?.name];
+  if (!c || !d?.function) return d;
+  const src = d.function.parameters?.properties || {};
+  const properties = {};
+  for (const [k, v] of Object.entries(src)) properties[k] = { ...v, description: c.params[k] || v.description };
+  return {
+    ...d,
+    function: {
+      ...d.function,
+      description: c.description,
+      parameters: { ...(d.function.parameters || {}), properties },
+    },
+  };
+}
+
 /** 中文按 2-gram + 单字，英文/数字按单词。生成检索词数组 */
 function terms(text) {
   const s = String(text || '').toLowerCase();
@@ -213,7 +253,8 @@ export function pickTools(defs, query, {
     if (!d) continue;
     const clean = { ...d };
     delete clean.meta;
-    out.push(clean);
+    // 常驻段用精简说明（find_tool 自己不精简，它要告诉模型怎么搜工具）
+    out.push(order.includes(n) ? compactStableDef(clean) : clean);
   }
   return {
     defs: out,

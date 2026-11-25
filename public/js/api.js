@@ -1,6 +1,6 @@
 /* DeepSeek API 封装：请求构造、SSE 解析、文件上传、语音 */
 import { settings } from './store.js';
-import { pickTools } from './tool-search.js';
+import { pickTools, COMPACT_STABLE_ORDER } from './tool-search.js';
 import { estimateTokens } from './util.js';
 import { runBrowserEval } from './eval-tool.js';
 
@@ -283,13 +283,20 @@ export function buildPayload(history, {
   let localWebFetch = false;
   // 常驻工具（只要开关不变就永远这几个，顺序也固定）：联网搜索 / 读网页 / find_tool
   const stable = [];
+  const compactStableSeen = [];
   if (!officialWeb) {
     for (const def of extraTools || []) {
       const web = def?.meta?.web;
       if (web === 'search' && useSearch) { stable.push(def.function.name); localWebSearch = true; }
       else if (web === 'fetch' && useReadUrl) { stable.push(def.function.name); localWebFetch = true; }
       else if (def?.function?.name === 'find_tool' && s.localTools !== false) stable.push('find_tool');
+      // 高频只读工具常驻：余额 / 用量 / 搜索历史 / 当前时间。
+      // 顺序固定（按下方 COMPACT_STABLE_ORDER），下发时由 pickTools 换成精简说明，
+      // find_tool 检索与返回仍读服务端完整定义。
+      else if (s.localTools !== false && COMPACT_STABLE_ORDER.includes(def?.function?.name)) compactStableSeen.push(def.function.name);
     }
+    // 常驻顺序固定：网络工具 → find_tool → 四个高频只读工具（按 COMPACT_STABLE_ORDER）
+    for (const n of COMPACT_STABLE_ORDER) if (compactStableSeen.includes(n)) stable.push(n);
     // find_tool 上一轮找到的工具：本轮必须下发，否则模型拿到搜索结果却调不了。
     // 但它们是「后加载」的，一律排在 tools 末尾 —— 混进常驻段会把整段缓存前缀打散。
     const late = [...new Set(foundTools || [])].filter((n) => !stable.includes(n));
