@@ -27,7 +27,14 @@ export async function runBrowserEval(args = {}, isEnabled = false) {
   if (!isEnabled) {
     return { ok: false, text: '浏览器代码执行未开启。请到 设置 → 生成 → 开启 eval（危险） 后再试。' };
   }
-  const code = String((args && (args.code ?? args.expression ?? args.script)) || '');
+  // DeepSeek 的 tool_calls.arguments 是 JSON 字符串，不是对象；服务端工具在 /api/tools/call
+  // 里会先 JSON.parse，eval 走浏览器本地执行，必须在这里做同样的归一化。
+  let a = args;
+  if (typeof a === 'string') {
+    try { a = JSON.parse(a); }
+    catch { return { ok: false, text: 'eval 的 arguments 不是合法 JSON：' + a.slice(0, 200) }; }
+  }
+  const code = String((a && (a.code ?? a.expression ?? a.script)) || '');
   if (!code.trim()) return { ok: false, text: '缺少 code 参数：要执行一段 JavaScript 代码。' };
   if (code.length > MAX_CODE) return { ok: false, text: `代码过长（最多 ${MAX_CODE} 字符）。` };
 
