@@ -365,47 +365,91 @@ export function updateConversation(id, patch) {
 export function deleteConversation(id) {
   const i = convs.findIndex((c) => c.id === id);
   if (i >= 0) {
+    const gone = convs[i];
     convs.splice(i, 1);
     saveConversations();
+    // 该会话是所属分组里最后一个的话，分组一起清掉：否则侧栏留一堆空分组
+    pruneEmptyGroups([gone.groupId]);
     return true;
   }
   return false;
 }
 
+/** 清掉已经没有任何会话的分组。传 candidateIds 时只检查这几个（避免误删刚建的空分组） */
+export function pruneEmptyGroups(candidateIds = null) {
+  const used = new Set(convs.map((c) => c.groupId).filter(Boolean));
+  const only = candidateIds ? new Set(candidateIds.filter(Boolean)) : null;
+  if (only && !only.size) return 0;
+  const keep = [];
+  let removed = 0;
+  for (const g of groups) {
+    const hit = only ? only.has(g.id) : true;
+    if (hit && !used.has(g.id)) removed++;
+    else keep.push(g);
+  }
+  if (!removed) return 0;
+  groups = keep;
+  saveGroups();
+  return removed;
+}
+
 export function clearAllConversations() {
   convs = [];
   saveConversations();
+  // 清空聊天记录也把分组清掉（分组只是聊天记录的容器）
+  if (groups.length) {
+    groups = [];
+    saveGroups();
+  }
 }
 
 /** 导入：本地合并/替换后整体覆盖到服务端 */
 export async function importConversations(list, mode = 'merge') {
-  const incoming = (Array.isArray(list) ? list : []).filter((c) => c && Array.isArray(c.messages)).map((c) => ({
-    id: c.id || 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-    uuid: c.uuid || uuid(),
-    title: c.title || '',
-    createdAt: c.createdAt || Date.now(),
-    updatedAt: c.updatedAt || Date.now(),
-    pinned: Boolean(c.pinned),
-    // 分组归属与会话级设置：导出/导入必须原样带回，否则分组会丢失
-    groupId: c.groupId || null,
-    settings: c.settings && typeof c.settings === 'object' ? c.settings : {},
-    messages: c.messages.map((m) => ({
-      id: m.id || 'm_' + Math.random().toString(36).slice(2, 8),
-      role: m.role === 'assistant' ? 'assistant' : 'user',
-      content: typeof m.content === 'string' ? m.content : '',
-      reasoning: m.reasoning || '',
-      attachments: Array.isArray(m.attachments) ? m.attachments : [],
-      annotations: Array.isArray(m.annotations) ? m.annotations : [],
-      serverToolCalls: Array.isArray(m.serverToolCalls) ? m.serverToolCalls : [],
-      usage: m.usage || null,
-      // 费用定档快照（发送时刻算好，之后不随当前时间/改价重算）
-      cost: m.cost && typeof m.cost === 'object' && m.cost.text
-        ? { text: String(m.cost.text), value: Number(m.cost.value) || 0, peak: Boolean(m.cost.peak), at: Number(m.cost.at) || 0 }
-        : null,
-      model: m.model || '',
-      createdAt: m.createdAt || Date.now(),
-    })),
-  }));
+  const incoming = (Array.isArray(list) ? list : []).filter((c) => c && Array.isArray(c.messages)).map((c) => {
+    // 原样保留会话字段（rootMessageId / titleFinal 等），只对必需项做兜底 ——
+    // 用白名单重建会把分支树、重新生成的版本、工具消息整片丢掉。
+    const conv = {
+      ...c,
+      id: c.id || 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+      uuid: c.uuid || uuid(),
+      title: c.title || '',
+      createdAt: c.createdAt || Date.now(),
+      updatedAt: c.updatedAt || Date.now(),
+      pinned: Boolean(c.pinned),
+      // 分组归属与会话级设置：导出/导入必须原样带回，否则分组会丢失
+      groupId: c.groupId || null,
+      settings: c.settings && typeof c.settings === 'object' ? c.settings : {},
+    };
+    conv.messages = (c.messages || []).map((m) => {
+      const out = { ...m };
+      out.id = m.id || 'm_' + Math.random().toString(36).slice(2, 8);
+      // tool 消息必须保住：工具卡片、参数、结果都靠它还原
+      out.role = m.role === 'assistant' ? 'assistant' : (m.role === 'tool' ? 'tool' : 'user');
+      out.content = typeof m.content === 'string' ? m.content : '';
+      out.createdAt = m.createdAt || Date.now();
+      out.attachments = Array.isArray(m.attachments) ? m.attachments : [];
+      out.annotations = Array.isArray(m.annotations) ? m.annotations : [];
+      out.serverToolCalls = Array.isArray(m.serverToolCalls) ? m.serverToolCalls : [];
+      out.streaming = false;   // 导入的历史不该带着「输出中」的光标
+      // 费用定档快照：格式不对就丢掉，免得渲染时炸
+      if (m.cost && typeof m.cost === 'object' && m.cost.text) {
+        out.cost = { text: String(m.cost.text), value: Number(m.cost.value) || 0, peak: Boolean(m.cost.peak), at: Number(m.cost.at) || 0 };
+      } else {
+        delete out.cost;
+      }
+      return out;
+    });
+    // 分支树：官方包/旧备份没有 parentId，按顺序补一条链。
+    // 注意 normalizeConv 只要看到 rootMessageId 就直接 return，不补指针，所以这里必须补全。
+    conv.messages.forEach((m, i) => {
+      if (m.parentId === undefined) m.parentId = conv.messages[i - 1]?.id ?? null;
+      if (m.selectedChildId === undefined) m.selectedChildId = conv.messages[i + 1]?.id ?? null;
+    });
+    if (!conv.rootMessageId || !conv.messages.some((m) => m.id === conv.rootMessageId)) {
+      conv.rootMessageId = conv.messages[0]?.id ?? null;
+    }
+    return conv;
+  });
   if (mode === 'replace') convs = incoming;
   else {
     const ids = new Set(convs.map((c) => c.id));
@@ -421,9 +465,21 @@ export async function importConversations(list, mode = 'merge') {
 }
 
 /** 完整快照导出：v3 起包含分组（各组设置存于 group.settings）与 UI 状态；withAttachments 内联附件二进制 */
-export async function exportAllData({ withAttachments = false } = {}) {
+export async function exportAllData({ withAttachments = false, onProgress } = {}) {
+  onProgress?.({ phase: 'read', label: '读取服务端数据…' });
   const snap = await req('/api/store');
-  const conversations = Array.isArray(snap.conversations) ? snap.conversations : [];
+  const raw = Array.isArray(snap.conversations) ? snap.conversations : [];
+  // 附件里的 previewUrl 是本标签页的 blob: 地址，导出后必然失效，顺手剔掉省体积
+  const conversations = raw.map((c) => ({
+    ...c,
+    messages: (c.messages || []).map((m) => ({
+      ...m,
+      attachments: (m.attachments || []).map((a) => {
+        const { previewUrl, ...rest } = a;
+        return { ...rest, ready: true };
+      }),
+    })),
+  }));
   const out = {
     app: 'deepseek-chatbox',
     version: 3,
@@ -434,7 +490,13 @@ export async function exportAllData({ withAttachments = false } = {}) {
     groups: Array.isArray(snap.groups) ? snap.groups : [],
   };
   if (withAttachments) {
-    const { data, bytes } = await collectAttachmentData(conversations, (id) => attachmentUrl(id));
+    onProgress?.({ phase: 'attachments', done: 0, total: 1, label: '打包附件…' });
+    const { data, bytes } = await collectAttachmentData(conversations, (id) => attachmentUrl(id), {
+      onProgress: ({ done, total }) => onProgress?.({
+        phase: 'attachments', done, total,
+        label: `打包附件 ${done}/${total}…`,
+      }),
+    });
     out.attachmentData = data;
     out.attachmentBytes = bytes;
   }
@@ -442,14 +504,21 @@ export async function exportAllData({ withAttachments = false } = {}) {
 }
 
 /** 完整快照导入：对话 + 分组 + 全局设置 + UI。merge 时分组按 id 合并，replace 时整体替换 */
-export async function importAllData(data, mode = 'merge') {
+export async function importAllData(data, mode = 'merge', { onProgress } = {}) {
   const d = Array.isArray(data) ? { conversations: data } : (data || {});
   const incoming = Array.isArray(d.conversations) ? d.conversations : [];
   const incGroups = (Array.isArray(d.groups) ? d.groups : []).filter((g) => g && g.id);
   // 内联附件先还原（换成当前实例的附件 id），再写对话
   if (d.attachmentData) {
-    try { await restoreAttachmentData(incoming, d.attachmentData, uploadAttachment); } catch {}
+    const cnt = Object.keys(d.attachmentData).length;
+    onProgress?.({ phase: 'attachments', done: 0, total: cnt, label: `还原内联附件 0/${cnt}…` });
+    try {
+      await restoreAttachmentData(incoming, d.attachmentData, uploadAttachment, ({ done, total, restored }) => {
+        onProgress?.({ phase: 'attachments', done, total, label: `还原内联附件 ${done}/${total}（成功 ${restored}）…` });
+      });
+    } catch {}
   }
+  onProgress?.({ phase: 'write', label: `写入 ${incoming.length} 个对话…` });
   const n = await importConversations(incoming, mode);
   if (incGroups.length || mode === 'replace') {
     let next = incGroups;

@@ -957,31 +957,112 @@ const FIND_TOOL_KEYS = {
   text_kit: ['去重', '排序', '清洗文本', '清理空行', '加前缀', '拆列', '命名风格', '驼峰', '下划线命名', 'case转换'],
   aes_crypto: ['aes', '加解密', '对称加密', 'encrypt', 'decrypt', 'cbc', 'gcm', '加密参数', '解密密文'],
   cmd_run: ['执行命令', 'cmd', '运行命令', '本机命令'],
+  sub_agent: ['子智能体', '子代理', '子任务', '委派', 'subagent', 'sub_agent', 'ollama', '本地模型', '大模型', '多智能体'],
+  eval: ['浏览器执行', '控制台', '执行脚本', 'javascript', 'js脚本', 'eval', '调试'],
 };
 
-/** 在工具定义里检索（强关键词命中打分），供 find_tool 使用 */
+/** 检索用的英文停用词（工具描述里高频、不携带语义，留着会稀释得分） */
+const EN_STOP = new Set(['the', 'a', 'an', 'of', 'to', 'and', 'or', 'for', 'with', 'in', 'on', 'at',
+  'by', 'from', 'is', 'are', 'be', 'as', 'it', 'this', 'that', 'use', 'used', 'using', 'tool', 'tools',
+  'return', 'returns', 'string', 'number', 'boolean', 'object', 'array', 'default', 'optional',
+  'whether', 'when', 'if', 'not', 'no', 'yes', 'you', 'your', 'can', 'will', 'need', 'needs',
+  'value', 'values', 'param', 'params', 'text', 'input', 'output', 'result', 'results']);
+
+function addTok(map, tok, w) {
+  if (!tok) return;
+  map.set(tok, Math.min(14, (map.get(tok) || 0) + w));
+}
+
+/** 文本 → 检索 token：英文按词（下划线拆开），中文按整串 + 2/3-gram */
+function tokenizeInto(map, text, weight) {
+  const s = String(text || '').toLowerCase();
+  if (!s) return;
+  for (const part of s.split(/[^\p{L}\p{N}_]+/u)) {
+    if (!part) continue;
+    if (/[\u4e00-\u9fff]/.test(part)) {
+      const han = part.replace(/[^\u4e00-\u9fff]/g, '');
+      if (han.length === 1) addTok(map, han, weight);
+      if (han.length >= 2) addTok(map, han, weight * 1.6);        // 整串辨识度最高
+      for (let i = 0; i < han.length - 1; i++) addTok(map, han.slice(i, i + 2), weight);
+      if (han.length >= 3) for (let i = 0; i < han.length - 2; i++) addTok(map, han.slice(i, i + 3), weight * 0.8);
+      // 中英混写（aes加密、qr码）：同一片段里的英文也要能命中
+      for (const w of part.split(/[^\p{L}\p{N}_]+/u)) {
+        if (!w || /[\u4e00-\u9fff]/.test(w) || EN_STOP.has(w) || w.length < 2) continue;
+        addTok(map, w, weight);
+      }
+    } else {
+      for (const w of part.split('_')) {
+        if (!w || EN_STOP.has(w) || w.length < 2) continue;
+        addTok(map, w, weight);
+      }
+      if (part.includes('_') && part.length >= 3) addTok(map, part, weight * 2.5);  // 完整工具名
+    }
+  }
+}
+
+/** 每个工具建一次索引：名字、描述、参数名/枚举、人工别名（关键词表只作加权，不再是唯一来源） */
+const TOOL_INDEX = new Map();   // name -> { map, size, keys }
+
+function toolIndex(def) {
+  const name = def?.function?.name || '';
+  const cached = TOOL_INDEX.get(name);
+  if (cached) return cached;
+  const f = def?.function || {};
+  const map = new Map();
+  tokenizeInto(map, name, 3);                                  // 工具名权重最高
+  tokenizeInto(map, f.description || '', 1.2);                  // 描述次之
+  for (const [k, v] of Object.entries(f.parameters?.properties || {})) {
+    tokenizeInto(map, k, 1.5);                                  // 参数名：target/local/cloud/config
+    tokenizeInto(map, v?.description || '', 1);
+    if (Array.isArray(v?.enum)) for (const e of v.enum) tokenizeInto(map, e, 1.2);
+  }
+  const keys = FIND_TOOL_KEYS[name] || [];
+  for (const k of keys) tokenizeInto(map, k, 2.5);              // 人工别名加权
+  const idx = { map, size: map.size, keys };
+  TOOL_INDEX.set(name, idx);
+  return idx;
+}
+
+/**
+ * 工具检索：name + 描述 + 参数 + 人工别名 建索引后按 token 命中打分。
+ * 比原来只看手写关键词表可靠 —— 没登记词表的新工具（sub_agent / eval）也能被搜到。
+ */
 function searchToolDefs(defs, query, topK = 5) {
-  const lower = String(query || '').toLowerCase();
-  const flat = lower.replace(/[^\p{L}\p{N}]+/gu, '');
+  const raw = String(query || '').toLowerCase().trim();
+  if (!raw) return [];
+  const qmap = new Map();
+  tokenizeInto(qmap, raw, 1);
+  const qTokens = [...qmap.keys()];
+  const qName = raw.replace(/[^\p{L}\p{N}_]+/gu, '');
   const scored = [];
   for (const def of defs || []) {
     const name = def?.function?.name || '';
     if (name === 'find_tool') continue;
-    const keys = FIND_TOOL_KEYS[name] || [];
+    const idx = toolIndex(def);
     let score = 0;
-    for (const k of keys) {
-      const kw = String(k).toLowerCase();
-      if (lower.includes(kw)) score += kw.length >= 4 ? 12 : 8;
-      else if (/[\u4e00-\u9fff]/.test(kw) && kw.length >= 3) {
-        const grams = [];
-        for (let i = 0; i < kw.length - 1; i++) grams.push(kw.slice(i, i + 2));
-        if (grams.filter((g) => flat.includes(g)).length >= Math.max(2, grams.length - 1)) score += 5;
+    for (const qt of qTokens) {
+      let w = idx.map.get(qt) || 0;
+      if (!w && qt.length >= 3) {
+        // 前缀/包含兜底：agent ↔ agents、json ↔ json5、encrypt ↔ encryption
+        for (const [t, tw] of idx.map) {
+          if (t.length >= 3 && (t.startsWith(qt) || qt.startsWith(t))) { w = tw * 0.45; break; }
+        }
       }
+      if (w) score += w;
     }
-    if (score > 0) scored.push({ name, score, def });
+    if (!score) continue;
+    // 名字直接命中：模型常直接拿工具名搜，这种必须排最前
+    const nameHit = Boolean(qName) && (qName === name || qName.includes(name) || name.includes(qName));
+    // 长描述不该占便宜：按索引规模轻度归一
+    score = score / Math.sqrt(idx.size / 12 + 1);
+    if (nameHit) score += 50;
+    if (idx.keys.some((k) => raw.includes(String(k).toLowerCase()))) score += 8;
+    scored.push({ name, score: Math.round(score * 10) / 10, def });
   }
   scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
+  // 相对阈值：只留下和最佳命中同一量级的，避免"沾一个词"的低分噪声（local_ip / token_count）凑数
+  const best = scored[0]?.score || 0;
+  return scored.filter((h, i) => i === 0 || h.score >= best * 0.15).slice(0, topK);
 }
 
 /* --------------------------- 子智能体 sub_agent --------------------------- */
@@ -2739,7 +2820,7 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       const topK = Math.min(10, Math.max(1, Number(args.top_k) || 5));
       const hits = searchToolDefs(definitions, query, topK);
       if (!hits.length) {
-        return { ok: false, text: `没有找到与「${query}」相关的工具。可用工具共 ${definitions.length} 个，换个说法试试，或直接回答用户。` };
+        return { ok: false, text: `没有找到与「${query}」相关的工具。可用工具共 ${definitions.length} 个：可以换更短的关键词重试，或调用 find_tool({action:"list"}) 看完整目录。` };
       }
       const names = hits.map((h) => h.name);
       const lines = hits.map((h) => {
@@ -3205,4 +3286,4 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
   return { definitions, call, names: Object.keys(impl) };
 }
 
-module.exports = { createTools, _internals: { shortDate, htmlToText, decodeBuf, sniffCharset, dropNoiseBlocks, pickMainHtml, qrMatrix, qrCapacity, QR_MAX_VERSION } };
+module.exports = { createTools, _internals: { shortDate, htmlToText, decodeBuf, sniffCharset, dropNoiseBlocks, pickMainHtml, qrMatrix, qrCapacity, QR_MAX_VERSION, searchToolDefs } };

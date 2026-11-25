@@ -24,6 +24,8 @@ import { WHALE_PATHS } from './brand.js';
 const state = {
   currentId: null,
   streaming: false,
+  stopped: false,      // 用户点了停止：工具轮/工具执行循环据此尽早退出
+  followBottom: true,  // 是否跟随输出滚动：用户手动上翻时置 false
   controller: null,
   attachments: [],
   models: cachedModels(),
@@ -494,6 +496,7 @@ function bulkToggleAll() {
 function openConversation(id) {
   if (state.streaming) stopStreaming();
   state.currentId = id;
+  state.followBottom = true;   // 切会话总是落在最新一条
   syncRoute(true);          // 切会话记一条历史，支持浏览器后退
   renderSidebar();
   renderChat();
@@ -504,6 +507,7 @@ function newChat() {
   if (state.selection) exitSelection();
   if (state.streaming) stopStreaming();
   state.currentId = null;
+  state.followBottom = true;
   syncRoute(true);          // 新对话回根路径，记一条历史
   state.attachments = [];
   renderTray();
@@ -519,6 +523,9 @@ function newChat() {
 function currentConversation() {
   return state.currentId ? getConversation(state.currentId) : null;
 }
+
+// 每个会话上一轮下发过的工具名（有序）。tools 保持不变 → 请求前缀能连续命中缓存。
+const stickyToolsByConv = new Map();
 
 const APP_TITLE = 'Deepseek ChatBox';
 /** 顶栏左端显示当前会话标题（官方 chat 的做法）；欢迎页没有标题就留空 */
@@ -574,6 +581,7 @@ function applyRouteFromHistory() {
   try {
     if (state.streaming) stopStreaming();
     state.currentId = id;
+    state.followBottom = true;
     renderSidebar();
     renderChat();
     closeSidebarOnMobile();
@@ -625,8 +633,8 @@ function renderChat() {
       : messageView(it.m, versions);
     if (node) els.viewInner.append(node);
   }
-  requestAnimationFrame(() => scrollToBottom(true));
-  hydrateMermaid(els.viewInner).then(() => requestAnimationFrame(() => scrollToBottom(true)));
+  requestAnimationFrame(() => scrollToBottom());
+  hydrateMermaid(els.viewInner).then(() => requestAnimationFrame(() => scrollToBottom()));
 }
 
 function welcomeView() {
@@ -1678,6 +1686,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
     catch (e) { toast('本地工具加载失败：' + e.message); }
   }
 
+  state.stopped = false;
   state.streaming = true;
   state.controller = new AbortController();
   updateComposerState();
@@ -1691,6 +1700,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
 
   try {
     while (rounds++ < MAX_TOOL_ROUNDS) {
+      if (state.stopped) break;
       // 工具按需加载：用最近的用户问题检索工具；把历史里已调用过的工具带上，避免多轮断链
       const lastUser = [...curHistory].reverse().find((m) => m.role === 'user');
       const toolQuery = [lastUser?.content || '', ...(lastUser?.attachments || []).map((a) => a.text || '')].join(' ');
@@ -1709,7 +1719,8 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
           }
         }
       }
-      const { payload } = buildPayload(curHistory, {
+      const stickyTools = stickyToolsByConv.get(conv.id) || [];
+      const built = buildPayload(curHistory, {
         settings: es,
         stream: settings.stream,
         wantTitle: first && firstTurn,
@@ -1717,8 +1728,13 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
         extraTools,
         toolQuery,
         usedTools,
+        stickyTools,
         foundTools,
       });
+      const payload = built.payload;
+      // 记下本轮实际下发的顺序，下一轮原样打头，缓存前缀才连得上
+      if (built.toolNames?.length) stickyToolsByConv.set(conv.id, built.toolNames);
+      else stickyToolsByConv.delete(conv.id);
       if (first && continueMode) payload.__beta = true;
       window.__lastPayload = payload;
       window.__lastToolHits = { query: toolQuery.slice(0, 120), used: usedTools };
@@ -1733,6 +1749,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
       // 先画一次「执行中…」卡片：联网搜索要跑 0.5~2s，用户能马上看到在搜什么
       renderChat();
       for (const tc of toolCalls) {
+        if (state.stopped) break;   // 用户已点停止：剩下的工具不再执行
         const name = tc.function?.name || 'unknown';
         const args = tc.function?.arguments || '{}';
         const t0 = Date.now();
@@ -1748,9 +1765,13 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
               if (sys && !parsed.system) { parsed.system = sys; callArgs = JSON.stringify(parsed); }
             } catch {}
           }
-          out = await callTool(name, callArgs);
+          out = await callTool(name, callArgs, { signal: state.controller?.signal });
         }
-        catch (e) { out = { ok: false, text: '工具调用失败：' + e.message }; }
+        catch (e) {
+          if (state.stopped) break;   // 停止时工具请求被 abort，不算工具失败
+          out = { ok: false, text: '工具调用失败：' + e.message };
+        }
+        if (state.stopped) break;
         const content = out.text || JSON.stringify(out);
         const record = { id: tc.id, name, args, content, ok: out.ok !== false, ms: out.elapsedMs ?? (Date.now() - t0), data: out.data };
         cur.toolResults.push(record);
@@ -1761,6 +1782,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
         renderChat();
       }
       saveConversations();
+      if (state.stopped) break;
 
       // ---- 开新一轮回答 ----
       first = false;
@@ -1777,7 +1799,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
     }
 
     // ---- 工具轮次用尽：不再静默中断，明确告诉模型「不能再调工具，直接回答」 ----
-    if (limitHit) {
+    if (limitHit && !state.stopped) {
       const { payload } = buildPayload(curHistory, {
         settings: es,
         stream: settings.stream,
@@ -1809,8 +1831,14 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
       cur.error = err.message || String(err);
     }
   } finally {
+    // 停止时可能是在工具执行/工具轮之间退出的（没走到 AbortError），这里统一补标记
+    if (state.stopped && cur) {
+      cur.aborted = true;
+      if (!cur.content && !cur.reasoning && !cur.error) cur.error = t('aborted');
+    }
     state.streaming = false;
     state.controller = null;
+    state.stopped = false;
     if (cur) cur.streaming = false;
     if (es.jsonMode && cur?.content && !cur.error) {
       try { JSON.parse(cur.content); } catch { cur.error = t('jsonBad'); }
@@ -1819,7 +1847,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
     updateComposerState();
     renderChat();
     renderSidebar();
-    scrollToBottom(true);
+    scrollToBottom();         // 用户上翻看历史时不要被拉回底部
     autoBalance();            // 回答完余额可能变了，顺手刷一次（60 秒内不重复）
   }
 }
@@ -1962,7 +1990,16 @@ function renderToolCardsLive(refs, assistant) {
 }
 
 function stopStreaming() {
+  if (!state.streaming && !state.stopped) return;
+  // abort 只对「正在读流」有效；工具执行阶段是普通 HTTP 请求（可能几秒到几十秒），
+  // 所以还要立一个 stopped 标志，让工具轮/工具循环尽早退出，不能只 abort 了事。
+  state.stopped = true;
   state.controller?.abort();
+  // 立刻把按钮切回「发送」并收掉光标：否则工具执行期间点停止毫无反馈，看着像点不动
+  state.streaming = false;
+  updateComposerState();
+  document.querySelectorAll('.msg .md.cursor').forEach((n) => n.classList.remove('cursor'));
+  document.querySelectorAll('.think.streaming').forEach((n) => n.classList.remove('streaming'));
 }
 
 
@@ -2090,10 +2127,30 @@ async function readAloud(m, btn) {
   }
 }
 
+/**
+ * 滚动到底。
+ * force=true：无条件到底（发送新消息、切会话）。
+ * force=false：只有用户还在底部附近时才跟随输出 —— 用户手动上翻看历史时，
+ *              模型继续输出（含工具卡片重绘）都不许把视图拽下去。
+ */
 function scrollToBottom(force = false) {
   const view = els.chatView;
-  const nearBottom = view.scrollHeight - view.scrollTop - view.clientHeight < 160;
-  if (force || nearBottom) view.scrollTop = view.scrollHeight;
+  if (!view) return;
+  if (force) state.followBottom = true;
+  else if (!state.followBottom) return;
+  view.scrollTop = view.scrollHeight;
+}
+
+/** 距底 ≤24px 视为「在底部」，超过 120px 才算「离开底部」（滞回，避免抖动） */
+const STICK_ENTER = 24;
+const STICK_LEAVE = 120;
+function wireStickToBottom() {
+  els.chatView.addEventListener('scroll', () => {
+    const view = els.chatView;
+    const dist = view.scrollHeight - view.scrollTop - view.clientHeight;
+    if (dist <= STICK_ENTER) state.followBottom = true;
+    else if (dist > STICK_LEAVE) state.followBottom = false;
+  }, { passive: true });
 }
 
 /* ------------------------------ 输入框 ------------------------------ */
@@ -2883,6 +2940,7 @@ function wireSwipe() {
 }
 
 function wire() {
+  wireStickToBottom();
   els.prompt.addEventListener('input', () => { autoGrow(); updateComposerState(); });
   els.prompt.addEventListener('focus', () => els.shell.classList.add('focused'));
   els.prompt.addEventListener('blur', () => els.shell.classList.remove('focused'));

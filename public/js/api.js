@@ -258,6 +258,7 @@ export function buildPayload(history, {
   extraTools = [],
   toolQuery = '',     // 本轮用户问题，用于检索相关工具
   usedTools = [],     // 本对话已调用过的工具名，保证多轮不断链
+  stickyTools = [],   // 上一轮已下发的工具名（有序）：保持前缀稳定，提高缓存命中
   foundTools = [],    // find_tool 检索到的工具名，下一轮追加下发
 } = {}) {
   const useModel = model ?? s.model;
@@ -295,6 +296,7 @@ export function buildPayload(history, {
         topK: Number(s.toolTopK) || 8,
         always,
         usedTools,
+        sticky: stickyTools,
         enabled: true,
         cmdEnabled: s.cmdEnabled === true,
         evalEnabled: s.evalEnabled === true,
@@ -444,13 +446,14 @@ export async function getToolDefinitions() {
   return toolDefCache;
 }
 
-export async function callTool(name, args) {
+export async function callTool(name, args, { signal } = {}) {
   // eval 只在浏览器主线程执行；开关在前端再校验一次，服务端也会拒绝该工具的调用请求
   if (name === 'eval') return runBrowserEval(args, settings.evalEnabled === true);
   const r = await fetch('/api/tools/call', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name, arguments: args }),
+    signal,
   });
   const text = await r.text();
   let j = null;

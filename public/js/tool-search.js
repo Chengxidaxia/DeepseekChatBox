@@ -142,11 +142,20 @@ export function searchTools(defs, query, { topK = 8, minScore = 3 } = {}) {
   return scored.filter((x) => x.score >= minScore).slice(0, topK);
 }
 
-/** 组装本轮要下发的工具：检索命中 + 显式必带 + 已在对话里用过的（多轮不断链） */
+/**
+ * 组装本轮要下发的工具：检索命中 + 显式必带 + 已在对话里用过的（多轮不断链）。
+ *
+ * 缓存友好（DeepSeek 前缀缓存按 token 序列匹配，tools 排在最前，一改就整段 miss）：
+ * - sticky 是「上一轮下发过的工具名（有序）」。本轮先原样保留这段，新工具追加到末尾，
+ *   集合只增不减，因此 tools 序列的前缀能连续命中缓存。
+ * - sticky 超出上限时从最久未用的开始淘汰（一次淘汰只造成一次 miss，可接受）。
+ */
 export function pickTools(defs, query, {
   topK = 8,
   always = [],          // 必带工具名（如开关控制的联网工具）
   usedNames = [],       // 本对话已调用过的工具名
+  sticky = [],          // 上一轮已下发的工具名（保持顺序，前缀稳定）
+  maxTools = 24,        // sticky 上限，避免越滚越多把 token 吃光
   enabled = true,       // localTools 总开关
   cmdEnabled = false,
   evalEnabled = false,
@@ -154,29 +163,55 @@ export function pickTools(defs, query, {
 } = {}) {
   if (!enabled && !always.length) return { defs: [], names: [], hits: [] };
   const hits = enabled ? searchTools(defs, query, { topK }) : [];
-  const names = new Set(always);
-  // 已用过的工具必须保留，否则 messages 里的 tool_calls 与 tools 不匹配
-  for (const n of usedNames) {
-    if ((defs || []).some((d) => d?.function?.name === n)) names.add(n);
+  const byName = new Map((defs || []).map((d) => [d?.function?.name, d]));
+  const allowed = (n) => {
+    const d = byName.get(n);
+    if (!d) return false;
+    if (d?.meta?.cmd && !cmdEnabled) return false;
+    if (d?.meta?.browser && !evalEnabled) return false;
+    if (d?.meta?.subagent && !subAgentEnabled) return false;
+    if (d?.meta?.web && !always.includes(n)) return false;   // 联网工具只由 always 带入
+    return true;
+  };
+
+  const names = new Set();
+  // 1) always 先入，顺序固定
+  for (const n of always) if (allowed(n)) names.add(n);
+  // 2) sticky：沿用上一轮顺序，保住缓存前缀
+  for (const n of sticky) if (allowed(n)) names.add(n);
+  // 3) 本对话用过的工具必须保留，否则 messages 里的 tool_calls 与 tools 不匹配
+  for (const n of usedNames) if (allowed(n)) names.add(n);
+  // 4) 新命中的追加末尾
+  for (const h of hits) if (allowed(h.name)) names.add(h.name);
+
+  // 输出顺序 = always → sticky → 其余按定义原序；新工具天然排在后半段
+  const order = [];
+  const seen = new Set();
+  const push = (n) => { if (names.has(n) && !seen.has(n)) { seen.add(n); order.push(n); } };
+  for (const n of always) push(n);
+  for (const n of sticky) push(n);
+  for (const n of usedNames) push(n);
+  for (const d of defs || []) push(d?.function?.name);
+
+  // 超上限时从尾部（最久未用、非 always）淘汰
+  while (order.length > maxTools) {
+    let cut = -1;
+    for (let i = order.length - 1; i >= 0; i--) {
+      if (!always.includes(order[i])) { cut = i; break; }
+    }
+    if (cut < 0) break;
+    order.splice(cut, 1);
   }
-  for (const h of hits) names.add(h.name);
-  if (!cmdEnabled) names.delete('cmd_run');
-  if (!evalEnabled) names.delete('eval');
-  if (!subAgentEnabled) names.delete('sub_agent');
+
   const out = [];
-  for (const d of defs || []) {
-    const n = d?.function?.name;
-    if (!names.has(n)) continue;
-    if (d?.meta?.cmd && !cmdEnabled) continue;
-    if (d?.meta?.browser && !evalEnabled) continue; // 浏览器执行工具只在 evalEnabled 时下发
-    if (d?.meta?.subagent && !subAgentEnabled) continue; // 子智能体开关
-    const web = d?.meta?.web;
-    if (web && !always.includes(n)) continue; // 联网工具只由 always 带入
+  for (const n of order) {
+    const d = byName.get(n);
+    if (!d) continue;
     const clean = { ...d };
     delete clean.meta;
     out.push(clean);
   }
-  return { defs: out, names: [...names], hits: hits.map((h) => ({ name: h.name, score: Number(h.score.toFixed(2)) })) };
+  return { defs: out, names: order, hits: hits.map((h) => ({ name: h.name, score: Number(h.score.toFixed(2)) })) };
 }
 
 export { TOOL_KEYS, terms };

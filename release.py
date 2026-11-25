@@ -172,9 +172,9 @@ def sync_green() -> None:
         sys.exit(1)
     for name in ('public', 'server'):
         dst = os.path.join(GREEN, name)
-        if os.path.isdir(dst):
-            shutil.rmtree(dst)
-        shutil.copytree(os.path.join(ROOT, name), dst)
+        src = os.path.join(ROOT, name)
+        # 不先 rmtree：批量删除会被沙箱安全策略拦下，直接覆盖复制即可
+        shutil.copytree(src, dst, dirs_exist_ok=True)
     for f in ('server.mjs', 'package.json', '启动.bat', 'README.md'):
         src = os.path.join(ROOT, f)
         if os.path.exists(src):

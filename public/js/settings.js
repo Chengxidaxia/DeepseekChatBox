@@ -471,32 +471,61 @@ export function openSettings({ onChange } = {}) {
   }
 
   function dataTab() {
+    // 导入/导出进度：一条进度条 + 当前正在做的事，几千条消息 / 上万个附件时不让界面看着像卡死
+    const ipText = h('div', { class: 'ip-text', text: '' });
+    const ipFill = h('i');
+    const ipBox = h('div', { class: 'import-progress hidden' }, [ipText, h('div', { class: 'ip-bar' }, [ipFill])]);
+    const ipSet = (pct, text) => {
+      ipBox.classList.remove('hidden');
+      ipText.textContent = text || '';
+      ipFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+    };
+    const ipHide = () => ipBox.classList.add('hidden');
+
     const importInput = h('input', { type: 'file', accept: 'application/json,.json,.zip,application/zip', hidden: true });
     importInput.addEventListener('change', async () => {
       const f = importInput.files?.[0];
       if (!f) return;
       try {
         let n = 0;
+        ipSet(2, '读取文件…');
         if (/\.zip$/i.test(f.name) || await isZipFile(f)) {
           // 官方版导出包：chat_session_index.json + chat_sessions/*.json + 附件
-          toast('正在解析官方导出包…');
           const r = await importOfficialZip(f, {
             uploadAttachment,
-            onProgress: ({ done, imported }) => {
-              if (done && done % 20 === 0) toast(`已处理 ${done} 个附件（成功 ${imported}）…`);
+            onProgress: (p) => {
+              if (p.phase === 'parse') return ipSet(4, p.label);
+              if (p.phase === 'sessions') {
+                return ipSet(4 + (p.done / Math.max(1, p.total)) * 40,
+                  `${p.label || '解析会话…'}${p.total ? '' : ''}`);
+              }
+              if (p.phase === 'attachments') {
+                return ipSet(45 + (p.total ? (p.done / p.total) * 45 : 20),
+                  `上传附件 ${p.done}${p.total ? '/' + p.total : ''}（成功 ${p.imported ?? 0}，跳过 ${p.skipped ?? 0}）…`);
+              }
             },
           });
+          ipSet(93, `写入 ${r.conversations.length} 个对话…`);
           n = await importAllData({ conversations: r.conversations }, 'merge');
+          ipSet(100, `完成：${n} 个对话、${r.attachmentsImported} 个附件`);
           toast(`已从官方导出包导入 ${n} 个对话、${r.attachmentsImported} 个附件`
             + (r.attachmentsSkipped ? `（${r.attachmentsSkipped} 个跳过）` : ''));
         } else {
+          ipSet(8, '解析 JSON…');
           const data = JSON.parse(await f.text());
-          n = await importAllData(data, 'merge');
+          n = await importAllData(data, 'merge', {
+            onProgress: (p) => ipSet(
+              p.total ? 10 + (p.done / p.total) * 80 : 45,
+              p.label || '写入中…',
+            ),
+          });
+          ipSet(100, `完成：${n} 个对话`);
           toast(`已导入 ${n} 个对话（含分组、各组设置与内联附件）`);
         }
         saveConversationsNow();
-        setTimeout(() => location.reload(), 900);
+        setTimeout(() => location.reload(), 1200);
       } catch (e) {
+        ipHide();
         toast('导入失败：' + e.message);
       }
       importInput.value = '';
@@ -505,14 +534,23 @@ export function openSettings({ onChange } = {}) {
     const exportBtn = h('button', { class: 'btn', type: 'button', text: t('exportData') });
     exportBtn.addEventListener('click', async () => {
       try {
-        toast('正在打包全部数据（含附件）…');
-        const snap = await exportAllData({ withAttachments: true });
+        ipSet(3, '读取全部数据…');
+        const snap = await exportAllData({
+          withAttachments: true,
+          onProgress: (p) => ipSet(
+            p.total ? 3 + (p.done / p.total) * 82 : 20,
+            p.label || '打包中…',
+          ),
+        });
+        ipSet(92, '生成导出文件…');
         download(`deepseek-chatbox-${new Date().toISOString().slice(0, 10)}.json`,
           JSON.stringify(snap, null, 2));
         const nAtt = Object.keys(snap.attachmentData || {}).length;
         const mb = ((snap.attachmentBytes || 0) / 1048576).toFixed(1);
+        ipSet(100, `完成：${snap.conversations.length} 个对话、${nAtt} 个附件（${mb} MB）`);
         toast(`已导出 ${snap.conversations.length} 个对话、${nAtt} 个附件（${mb} MB）`);
       } catch (e) {
+        ipHide();
         toast('导出失败：' + e.message);
       }
     });
@@ -568,6 +606,7 @@ export function openSettings({ onChange } = {}) {
           h('div', { class: 'help', text: `共 ${convs.length} 个对话、${msgCount} 条消息。` }),
           h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' } }, [exportBtn, importBtn, clearBtn, modelBtn]),
           importInput,
+          ipBox,
         ]),
       ]),
     ];

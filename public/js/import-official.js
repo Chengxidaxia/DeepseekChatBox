@@ -98,6 +98,7 @@ function kindOf(name, mime) {
 
 /** 官方 zip → {conversations, attachmentsImported, attachmentsSkipped} */
 export async function importOfficialZip(file, { uploadAttachment, onProgress } = {}) {
+  onProgress?.({ phase: 'parse', label: '解压并读取导出包…' });
   const entries = await readZipEntries(file);
   const dec = new TextDecoder('utf-8');
 
@@ -123,7 +124,9 @@ export async function importOfficialZip(file, { uploadAttachment, onProgress } =
   let skipped = 0;
   let total = 0;
 
-  for (const s of sessions) {
+  for (let si = 0; si < sessions.length; si++) {
+    const s = sessions[si];
+    onProgress?.({ phase: 'sessions', done: si, total: sessions.length, label: `解析会话 ${si}/${sessions.length}…` });
     const meta = index.get(s.id) || {};
     const messages = [];
     for (const m of s.messages || []) {
@@ -190,10 +193,12 @@ export async function importOfficialZip(file, { uploadAttachment, onProgress } =
             const blob = new Blob([bytes], { type: att.mime });
             const up = await uploadAttachment(blob, att.name);
             if (up?.id) {
+              att.attId = up.id;   // 渲染读 attId，必须写这个字段
               att.id = up.id;
               if (up.url) att.url = up.url;
               if (up.mime) att.mime = up.mime;
               if (up.size) att.size = up.size;
+              att.ready = true;
               imported++;
             } else {
               skipped++;
@@ -203,7 +208,7 @@ export async function importOfficialZip(file, { uploadAttachment, onProgress } =
           skipped++;
         }
         total++;
-        onProgress?.({ done: total, imported, skipped, name: att.name });
+        onProgress?.({ phase: 'attachments', done: total, imported, skipped, name: att.name, label: `上传附件 ${total}（成功 ${imported}，跳过 ${skipped}）…` });
       }
     }
 
@@ -240,54 +245,77 @@ export function base64ToBytes(b64) {
 }
 
 /** 把对话里所有附件下载成 base64，供导出内联。单文件超限则跳过 */
-export async function collectAttachmentData(conversations, urlOf, { maxBytes = MAX_ATTACH_BYTES } = {}) {
+/**
+ * 把对话里所有附件下载成 base64，供导出内联。
+ * 附件对象上真正指向服务端文件的是 attId（渲染也用 attId），历史数据里才可能有 id ——
+ * 原来只认 a.id，导致 exports 里附件本体一个都没带上。
+ */
+export async function collectAttachmentData(conversations, urlOf, { maxBytes = MAX_ATTACH_BYTES, onProgress } = {}) {
   const out = {};
   let bytesTotal = 0;
+  const all = [];
   for (const c of conversations) {
     for (const m of c.messages || []) {
-      for (const a of m.attachments || []) {
-        if (!a.id || out[a.id]) continue;
-        const url = urlOf ? urlOf(a.id) : '';
-        if (!url) continue;
-        try {
-          const r = await fetch(url);
-          if (!r.ok) continue;
-          const buf = new Uint8Array(await r.arrayBuffer());
-          if (buf.length > maxBytes) continue;
-          out[a.id] = {
-            name: a.name || a.id,
-            mime: a.mime || r.headers.get('content-type') || 'application/octet-stream',
-            data: bytesToBase64(buf),
-          };
-          bytesTotal += buf.length;
-        } catch {}
-      }
+      for (const a of m.attachments || []) all.push(a);
     }
+  }
+  const total = all.length;
+  let done = 0;
+  for (const a of all) {
+    done++;
+    const id = a.attId || a.id;
+    if (!id || out[id]) { onProgress?.({ done, total, id }); continue; }
+    const url = urlOf ? urlOf(id) : '';
+    if (!url) { onProgress?.({ done, total, id }); continue; }
+    try {
+      const r = await fetch(url);
+      if (!r.ok) { onProgress?.({ done, total, id }); continue; }
+      const buf = new Uint8Array(await r.arrayBuffer());
+      if (buf.length > maxBytes) { onProgress?.({ done, total, id }); continue; }
+      out[id] = {
+        name: a.name || id,
+        mime: a.mime || r.headers.get('content-type') || 'application/octet-stream',
+        data: bytesToBase64(buf),
+      };
+      bytesTotal += buf.length;
+    } catch {}
+    onProgress?.({ done, total, id, bytes: bytesTotal });
   }
   return { data: out, bytes: bytesTotal };
 }
 
 /** 导入时把内联附件还原成新附件 id（覆盖原 id） */
-export async function restoreAttachmentData(conversations, data, uploadAttachment) {
+export async function restoreAttachmentData(conversations, data, uploadAttachment, onProgress) {
   if (!data || !uploadAttachment) return 0;
-  let n = 0;
+  const all = [];
   for (const c of conversations) {
     for (const m of c.messages || []) {
-      for (const a of m.attachments || []) {
-        const rec = a.id && data[a.id];
-        if (!rec) continue;
-        try {
-          const blob = new Blob([base64ToBytes(rec.data)], { type: rec.mime || 'application/octet-stream' });
-          const up = await uploadAttachment(blob, rec.name || a.name || 'file');
-          if (up?.id) {
-            a.id = up.id;
-            if (up.url) a.url = up.url;
-            a.mime = up.mime || rec.mime;
-            n++;
-          }
-        } catch {}
-      }
+      for (const a of m.attachments || []) all.push(a);
     }
+  }
+  const total = all.length;
+  let done = 0;
+  let n = 0;
+  for (const a of all) {
+    done++;
+    const key = a.attId || a.id;
+    const rec = key && data[key];
+    if (!rec) { onProgress?.({ done, total, restored: n }); continue; }
+    try {
+      const blob = new Blob([base64ToBytes(rec.data)], { type: rec.mime || 'application/octet-stream' });
+      const up = await uploadAttachment(blob, rec.name || a.name || 'file');
+      if (up?.id) {
+        // 两个字段都写：渲染走 attId，旧逻辑读 id
+        a.attId = up.id;
+        a.id = up.id;
+        if (up.url) a.url = up.url;
+        a.mime = up.mime || rec.mime;
+        a.ready = true;
+        delete a.previewUrl;   // 旧 blob: 地址换实例就失效
+        n++;
+      }
+    } catch {}
+    onProgress?.({ done, total, restored: n });
   }
   return n;
 }
