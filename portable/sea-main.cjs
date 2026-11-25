@@ -20,7 +20,7 @@ const _createTools = typeof createTools !== 'undefined' ? createTools : require(
 const _createLan = typeof createLan !== 'undefined' ? createLan : require('../server/lan-core.cjs').createLan;
 
 const APP_ID = 'deepseek-chatbox';
-const VERSION = '1.14.2';
+const VERSION = '1.14.3';
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
 
@@ -393,6 +393,10 @@ const server = http.createServer(async (req, res) => {
         hasKey: Boolean(store.getApiKey()), dataDir: store.dir, version: VERSION,
         assetErr: lastAssetErr, node: process.version,
       });
+    }
+    // 前端版本号统一从后端读取；便携版 SEA 无磁盘 package.json，用内联 VERSION 作为真源。
+    if (p === '/api/version') {
+      return sendJson(res, 200, { version: VERSION });
     }
     if (p === '/api/store' && method === 'GET') return sendJson(res, 200, store.snapshot());
     if (p === '/api/settings' && (method === 'PUT' || method === 'PATCH')) {

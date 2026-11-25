@@ -921,6 +921,7 @@ const FIND_TOOL_KEYS = {
   get_balance: ['余额', '充值', '欠费', '账户余额', '还有多少钱'],
   list_models: ['模型列表', '有哪些模型', '可用模型', '模型版本'],
   current_time: ['几点', '现在时间', '今天几号', '星期几', '时区'],
+  peak_status: ['峰谷', '峰时', '谷时', '错峰', '高峰时段', '空闲时段', '计价时段', 'deepseek价格'],
   search_history: ['历史对话', '之前聊过', '以前问过', '找对话'],
   usage_stats: ['用量统计', '消耗token', '总共用了', '累计token'],
   web_search: ['搜索', '联网', '新闻', '最新消息', '查一下', '天气', '实时'],
@@ -1484,6 +1485,14 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       function: {
         name: 'current_time',
         description: '获取本机的当前日期、时间、星期与时区。用户问「现在几点/今天几号」时使用。',
+        parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'peak_status',
+        description: '查看当前 DeepSeek 峰谷时段（北京时间）：峰时还是谷时、计价规则与下次切换时间。',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
       },
     },
@@ -2212,6 +2221,48 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || '未知';
       const text = `${iso}（${zh}，时区 ${tz}，UTC 偏移 ${-d.getTimezoneOffset() / 60}h）`;
       return { ok: true, text, data: { iso, weekday: zh, tz } };
+    },
+
+    async peak_status() {
+      // 与前端计价口径一致：北京时间周一至周五 09:00-12:00、14:00-18:00 为峰时，其余为谷时。
+      const BJ = 8 * 3600 * 1000;
+      const parts = (ms) => {
+        const d = new Date(ms + BJ);
+        return { y: d.getUTCFullYear(), mo: d.getUTCMonth(), da: d.getUTCDate(), h: d.getUTCHours(), mi: d.getUTCMinutes(), day: d.getUTCDay() };
+      };
+      const isPeak = (ms) => {
+        const p = parts(ms);
+        if (p.day === 0 || p.day === 6) return false;
+        const m = p.h * 60 + p.mi;
+        return (m >= 540 && m < 720) || (m >= 840 && m < 1080);
+      };
+      const pad = (n) => String(n).padStart(2, '0');
+      const fmt = (ms) => {
+        const p = parts(ms);
+        return `${p.y}-${pad(p.mo + 1)}-${pad(p.da)} ${pad(p.h)}:${pad(p.mi)}`;
+      };
+      const now = Date.now();
+      const cur = isPeak(now);
+      const p0 = parts(now);
+      // 状态只会在每天 00/09/12/14/18/24 点这些边界翻转，往后 8 天足够跨过周末。
+      const dayStart = Date.UTC(p0.y, p0.mo, p0.da) - BJ;
+      const cands = [];
+      for (let d = 0; d <= 8; d++) for (const o of [0, 540, 720, 840, 1080, 1440]) cands.push(dayStart + d * 86400000 + o * 60000);
+      cands.sort((a, b) => a - b);
+      const next = cands.find((t) => t > now && isPeak(t) !== cur) || null;
+      const wk = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
+      const lines = [
+        `当前：${cur ? '峰时' : '谷时'}（北京时间 ${fmt(now)} ${wk[p0.day]}）`,
+        '规则：工作日 09:00-12:00、14:00-18:00 为峰时，其余为谷时',
+      ];
+      if (next) {
+        const mins = Math.max(0, Math.round((next - now) / 60000));
+        const hh = Math.floor(mins / 60), mm = mins % 60;
+        const span = hh > 0 ? (mm > 0 ? `${hh} 小时 ${mm} 分钟` : `${hh} 小时`) : `${mm} 分钟`;
+        lines.push(`下次切换：${fmt(next)} → ${isPeak(next) ? '峰时' : '谷时'}（约 ${span}后）`);
+      }
+      lines.push('注：按北京时间计算，未计法定节假日/调休。');
+      return { ok: true, text: lines.join('\n'), data: { peak: cur, bj: fmt(now), nextAt: next ? fmt(next) : null } };
     },
 
     async search_history(args = {}) {

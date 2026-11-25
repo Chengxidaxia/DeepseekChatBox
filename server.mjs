@@ -45,6 +45,14 @@ function log(...a) {
   console.log('[' + logStamp() + ']', ...a);
 }
 
+// 版本号以服务端 package.json 为唯一真源；前端不再硬编码，统一通过 /api/version 读取。
+let APP_VERSION = '';
+try {
+  APP_VERSION = String(JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf8')).version || '');
+} catch (e) {
+  log('[警告] 读取 package.json 版本号失败：' + e.message);
+}
+
 let store;
 try {
   store = createStore({ dataDir: DATA_DIR, log });
@@ -390,8 +398,11 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/health') {
       return sendJson(res, 200, {
         ok: true, app: 'deepseek-chatbox', mode: 'source', storage: 'server',
-        hasKey: Boolean(store.getApiKey()), dataDir: store.dir, node: process.version,
+        hasKey: Boolean(store.getApiKey()), dataDir: store.dir, version: APP_VERSION, node: process.version,
       });
+    }
+    if (p === '/api/version') {
+      return sendJson(res, 200, { version: APP_VERSION });
     }
     if (p === '/api/store' && method === 'GET') {
       return sendJson(res, 200, store.snapshot());

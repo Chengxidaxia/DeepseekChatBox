@@ -3,7 +3,7 @@ import { h, $, download, toast } from './util.js';
 import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, uploadAttachment, clearAllConversations, meta as storeMeta, saveConversationsNow, flushNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
 import { isZipFile, importOfficialZip } from './import-official.js';
 import { t } from './i18n.js';
-import { APP_VERSION, APP_NAME, APP_REPO, APP_RELEASES } from './version.js';
+import { APP_NAME, APP_REPO, APP_RELEASES, getAppVersion, loadAppVersion } from './version.js';
 import { appConfirm } from './dialog.js';
 import { listModels, cachedModels } from './api.js';
 
@@ -56,13 +56,25 @@ function section(title, items) {
 
 function aboutTab() {
   const link = (href, label) => h('a', { href, target: '_blank', rel: 'noopener noreferrer', text: label });
-  const row = (k, v) => h('div', { class: 'about-row' }, [h('b', { text: k }), h('span', { text: v })]);
+  const row = (k, v) => h('div', { class: 'about-row' }, [
+    h('b', { text: k }),
+    v && v.nodeType ? v : h('span', { text: v }),
+  ]);
+  // 版本号从后端读取：先占位，拿到后回填（含缓存命中场景，立即回填）。
+  const versionSlot = (cls) => {
+    const el = h('span', cls ? { class: cls } : {}, ['…']);
+    const fill = (v) => { el.textContent = v ? 'v' + v : '?'; };
+    const cached = getAppVersion();
+    if (cached) fill(cached);
+    else loadAppVersion().then(fill);
+    return el;
+  };
   return [
     h('div', { class: 'set-section' }, [
       h('div', { class: 'set-section-title', text: t('aboutTitle') }),
       h('div', { class: 'about-brand' }, [
         h('b', { text: APP_NAME }),
-        h('span', { class: 'about-version', text: 'v' + APP_VERSION }),
+        versionSlot('about-version'),
       ]),
       h('div', { class: 'help', text: t('aboutDesc') }),
       h('div', { class: 'about-links' }, [
@@ -77,7 +89,7 @@ function aboutTab() {
     h('div', { class: 'set-section' }, [
       h('div', { class: 'set-section-title', text: t('aboutStorage') }),
       h('div', { class: 'help', text: t('aboutStorageBody') }),
-      row(t('aboutVersion'), 'v' + APP_VERSION),
+      row(t('aboutVersion'), versionSlot()),
       row(t('aboutBuild'), t('aboutBuildBody')),
     ]),
   ];
