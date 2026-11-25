@@ -984,6 +984,269 @@ function searchToolDefs(defs, query, topK = 5) {
   return scored.slice(0, topK);
 }
 
+/* --------------------------- 子智能体 sub_agent --------------------------- */
+// 配置项刻意做得多：模型、采样、上下文、自动启服务、工具轮数、超时等，
+// 都能通过设置面板或 sub_agent({target:'local',action:'config'}) 修改。
+const SUB_AGENT_DEFAULTS = {
+  enabled: true,
+  system: '',
+  // cloud
+  cloudModel: '',
+  cloudMaxTurns: 6,
+  cloudTimeoutMs: 120000,
+  cloudTemperature: null,
+  // local（Ollama）
+  ollamaUrl: 'http://127.0.0.1:11434',
+  autoStart: true,
+  autoStartCmd: 'ollama serve',
+  defaultModel: '',
+  temperature: 0.7,
+  topP: 0.9,
+  topK: 40,
+  numCtx: 8192,
+  numPredict: 2048,
+  repeatPenalty: 1.1,
+  seed: 0,
+  stop: '',
+  keepAlive: '5m',
+  think: false,
+  toolsEnabled: true,
+  maxTurns: 4,
+  timeoutMs: 180000,
+  stream: false,
+  format: '',
+};
+
+function subAgentConfig(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const out = { ...SUB_AGENT_DEFAULTS };
+  for (const k of Object.keys(SUB_AGENT_DEFAULTS)) {
+    if (src[k] === undefined || src[k] === null) continue;
+    const d = SUB_AGENT_DEFAULTS[k];
+    if (typeof d === 'boolean') out[k] = Boolean(src[k]);
+    else if (typeof d === 'number') {
+      const n = Number(src[k]);
+      if (Number.isFinite(n)) out[k] = n;
+    } else if (k === 'stop') out[k] = Array.isArray(src[k]) ? src[k].join('\n') : String(src[k]);
+    else out[k] = String(src[k]);
+  }
+  return out;
+}
+
+function sanitizeSubAgentPatch(patch) {
+  const out = {};
+  for (const [k, v] of Object.entries(patch || {})) {
+    if (!(k in SUB_AGENT_DEFAULTS)) continue;
+    const d = SUB_AGENT_DEFAULTS[k];
+    if (typeof d === 'boolean') out[k] = Boolean(v);
+    else if (typeof d === 'number') {
+      const n = Number(v);
+      if (Number.isFinite(n)) out[k] = n;
+    } else if (k === 'stop') out[k] = Array.isArray(v) ? v.join('\n') : String(v);
+    else out[k] = String(v);
+  }
+  return out;
+}
+
+function ollamaRoot(url) {
+  let s = String(url || SUB_AGENT_DEFAULTS.ollamaUrl).trim().replace(/\/+$/, '');
+  if (!/^https?:\/\//i.test(s)) s = 'http://' + s;
+  return s.replace(/\/api\/(chat|tags|generate)$/i, '');
+}
+
+async function ollamaAlive(root, timeoutMs = 2500) {
+  try {
+    const r = await fetch(root + '/api/tags', { signal: AbortSignal.timeout(timeoutMs) });
+    return r.ok;
+  } catch { return false; }
+}
+
+/** 探活；本机地址且开启 autoStart 时自动拉起 ollama serve，最多等 8 秒 */
+async function ensureOllama(cfg, log) {
+  const root = ollamaRoot(cfg.ollamaUrl);
+  if (await ollamaAlive(root)) return { ok: true, root, started: false };
+  if (!cfg.autoStart) {
+    return { ok: false, root, text: `Ollama 未运行（${root}）。请先启动 ollama serve，或在设置里改服务地址。` };
+  }
+  const isLocal = /\/\/(127\.0\.0\.1|localhost|\[::1\])(:|$)/i.test(root);
+  if (!isLocal) {
+    return { ok: false, root, text: `无法连接 Ollama（${root}）：远程地址不会自动启动，请先手动启动服务。` };
+  }
+  const cmd = cfg.autoStartCmd || 'ollama serve';
+  try {
+    const child = spawn(cmd, { shell: true, detached: true, stdio: 'ignore', windowsHide: true });
+    child.unref();
+    log('[sub_agent] 已尝试启动 Ollama：' + cmd);
+  } catch (e) {
+    return { ok: false, root, text: `自动启动 Ollama 失败：${e.message}` };
+  }
+  for (let i = 0; i < 16; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+    if (await ollamaAlive(root)) return { ok: true, root, started: true };
+  }
+  return { ok: false, root, text: `已尝试启动 Ollama（${cmd}）但仍无法连接，请确认已安装并在 PATH 中。` };
+}
+
+async function ollamaModels(root) {
+  try {
+    const r = await fetch(root + '/api/tags', { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) return [];
+    const j = await r.json();
+    return (j.models || []).map((m) => m.name).filter(Boolean);
+  } catch { return []; }
+}
+
+/** 子智能体的工具链：与主智能体同一套定义，但剔除 sub_agent 自身（防递归）与浏览器端 eval */
+function toolsForSubAgent(definitions) {
+  return definitions
+    .filter((d) => d.function.name !== 'sub_agent')
+    .filter((d) => !d.meta?.browser)
+    .map((d) => ({ type: 'function', function: d.function }));
+}
+
+async function runCloudSubAgent({ args, cfg, definitions, store, call }) {
+  const key = store.getApiKey();
+  if (!key) return { ok: false, text: '本机未配置 API Key，cloud 子智能体不可用。' };
+  const s = store.rawSettings ? store.rawSettings() : {};
+  const base = String(s.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+  const model = String(args.model || cfg.cloudModel || s.model || 'deepseek-chat');
+  const sys = [
+    '你是一个专注于完成子任务的智能体。只做被交代的事，完成后直接给出结论，不要反问。',
+    args.system || cfg.system || '',
+  ].filter(Boolean).join('\n\n');
+  const tools = cfg.toolsEnabled ? toolsForSubAgent(definitions) : [];
+  const messages = [
+    { role: 'system', content: sys },
+    { role: 'user', content: String(args.task) },
+  ];
+  const maxTurns = Math.max(1, Math.min(12, Number(cfg.cloudMaxTurns) || 6));
+  const trace = [];
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const payload = { model, messages, stream: false };
+    if (tools.length) payload.tools = tools;
+    if (cfg.cloudTemperature !== null && cfg.cloudTemperature !== '') payload.temperature = Number(cfg.cloudTemperature);
+    let r;
+    try {
+      r = await fetch(base + '/chat/completions', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(Math.max(10000, cfg.cloudTimeoutMs)),
+      });
+    } catch (e) {
+      return { ok: false, text: `cloud 子智能体请求失败：${e.message}` };
+    }
+    const text = await r.text();
+    let j = null;
+    try { j = JSON.parse(text); } catch {}
+    if (!r.ok || !j) return { ok: false, text: `cloud 子智能体请求失败：HTTP ${r.status} ${text.slice(0, 200)}` };
+    const msg = j.choices?.[0]?.message || {};
+    const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    const entry = { role: 'assistant', content: msg.content || '' };
+    if (calls.length) entry.tool_calls = calls;
+    messages.push(entry);
+    if (!calls.length) {
+      return {
+        ok: true,
+        text: msg.content || '（子智能体没有返回内容）',
+        data: { target: 'cloud', model, turns: turn + 1, tools: trace },
+      };
+    }
+    for (const tc of calls) {
+      const name = tc.function?.name;
+      let a = {};
+      try { a = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+      let out;
+      try { out = await call(name, a); } catch (e) { out = { ok: false, text: e.message }; }
+      trace.push({ name, ok: out.ok !== false });
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: String(out.text || JSON.stringify(out)).slice(0, 20000) });
+    }
+  }
+  const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
+  return { ok: true, text: last?.content || '（子智能体达到最大轮数仍未给出结论）', data: { target: 'cloud', model, turns: maxTurns, tools: trace, limitHit: true } };
+}
+
+async function runLocalSubAgent({ args, cfg, definitions, call, log }) {
+  const up = await ensureOllama(cfg, log);
+  if (!up.ok) return { ok: false, text: up.text };
+  const root = up.root;
+  let model = String(args.model || cfg.defaultModel || '');
+  if (!model) {
+    const list = await ollamaModels(root);
+    model = list[0] || '';
+  }
+  if (!model) return { ok: false, text: `Ollama 已连接（${root}）但没有任何模型，请先执行 ollama pull 拉一个模型。` };
+  const sys = [
+    '你是一个专注于完成子任务的智能体。只做被交代的事，完成后直接给出结论。',
+    args.system || cfg.system || '',
+  ].filter(Boolean).join('\n\n');
+  const messages = [
+    { role: 'system', content: sys },
+    { role: 'user', content: String(args.task) },
+  ];
+  const tools = cfg.toolsEnabled ? toolsForSubAgent(definitions) : [];
+  const maxTurns = Math.max(1, Math.min(12, Number(cfg.maxTurns) || 4));
+  const options = {
+    temperature: cfg.temperature,
+    top_p: cfg.topP,
+    top_k: cfg.topK,
+    num_ctx: cfg.numCtx,
+    num_predict: cfg.numPredict,
+    repeat_penalty: cfg.repeatPenalty,
+  };
+  if (cfg.seed) options.seed = cfg.seed;
+  if (cfg.stop) options.stop = cfg.stop.split('\n').map((x) => x.trim()).filter(Boolean);
+  const trace = [];
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const payload = {
+      model, messages, stream: false, options,
+      keep_alive: cfg.keepAlive, think: Boolean(cfg.think),
+    };
+    if (tools.length) payload.tools = tools;
+    if (cfg.format === 'json') payload.format = 'json';
+    let r;
+    try {
+      r = await fetch(root + '/api/chat', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(Math.max(10000, cfg.timeoutMs)),
+      });
+    } catch (e) {
+      return { ok: false, text: `local 子智能体请求失败：${e.message}（地址 ${root}）` };
+    }
+    const text = await r.text();
+    let j = null;
+    try { j = JSON.parse(text); } catch {}
+    if (!r.ok || !j) return { ok: false, text: `local 子智能体请求失败：HTTP ${r.status} ${text.slice(0, 200)}` };
+    const msg = j.message || {};
+    const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    const entry = { role: 'assistant', content: msg.content || '' };
+    if (calls.length) entry.tool_calls = calls;
+    messages.push(entry);
+    if (!calls.length) {
+      return {
+        ok: true,
+        text: msg.content || '（子智能体没有返回内容）',
+        data: { target: 'local', model, root, turns: turn + 1, tools: trace, started: up.started },
+      };
+    }
+    for (const tc of calls) {
+      const name = tc.function?.name;
+      const rawArgs = tc.function?.arguments;
+      const a = rawArgs && typeof rawArgs === 'object' ? rawArgs : (() => {
+        try { return JSON.parse(rawArgs || '{}'); } catch { return {}; }
+      })();
+      let out;
+      try { out = await call(name, a); } catch (e) { out = { ok: false, text: e.message }; }
+      trace.push({ name, ok: out.ok !== false });
+      messages.push({ role: 'tool', content: String(out.text || JSON.stringify(out)).slice(0, 20000) });
+    }
+  }
+  const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
+  return { ok: true, text: last?.content || '（子智能体达到最大轮数仍未给出结论）', data: { target: 'local', model, root, turns: maxTurns, tools: trace, limitHit: true } };
+}
+
 function createTools({ store, upstream = 'https://api.deepseek.com', log = console.log, dataDir = '' }) {
   const definitions = [
     {
@@ -1619,6 +1882,28 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       },
     },
     {
+      // meta.subagent 让前端按 subAgentEnabled 过滤；云端专版整体禁用
+      meta: { subagent: true },
+      type: 'function',
+      function: {
+        name: 'sub_agent',
+        description: '把一件独立的事交给子智能体去做，拿回它的结论。target=cloud 用你自己的 DeepSeek API Key 调官方接口（消耗额度、能力强）；target=local 用本机 Ollama（免费离线、能力取决于本地模型）。子智能体会继承当前会话的系统提示与工具链，可以自己调用工具多轮完成任务。target=local 且 action=config 时可读取或修改本地子智能体设置（模型、温度、上下文、自动启动 Ollama 等）。',
+        parameters: {
+          type: 'object',
+          properties: {
+            target: { type: 'string', enum: ['cloud', 'local'], description: 'cloud=官方 API；local=本机 Ollama' },
+            action: { type: 'string', enum: ['run', 'config'], description: 'run=执行任务（默认）；config=读写本地配置（仅 target=local）' },
+            task: { type: 'string', description: '交给子智能体的任务，要自包含（它看不到本会话历史）' },
+            system: { type: 'string', description: '可选。补充/覆盖子智能体的系统提示，默认沿用当前会话' },
+            model: { type: 'string', description: '可选。覆盖模型：cloud 填 DeepSeek 模型名，local 填 Ollama 模型名' },
+            config: { type: 'object', description: 'action=config 时要修改的字段；省略则返回当前完整配置' },
+          },
+          required: ['target'],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
       // eval 在当前浏览器标签页执行 JS，不经过服务端；前端按 evalEnabled 开关过滤。
       // 服务端不提供实现：即使有人绕过前端直接 POST /api/tools/call 也会被 call() 拒绝。
       meta: { browser: true },
@@ -1996,6 +2281,30 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
         socket.on('error', (e) => finish(false, `${host}:${port} 不可达：${e.code || e.message}`));
         socket.connect(port, host);
       });
+    },
+
+    async sub_agent(args = {}) {
+      const target = args.target === 'local' ? 'local' : 'cloud';
+      const cfg = subAgentConfig(store.rawSettings ? store.rawSettings().subAgent : null);
+
+      // local 的 config 子工具：不带 config 就返回当前配置；带就按白名单改
+      if (target === 'local' && args.action === 'config') {
+        if (!args.config || typeof args.config !== 'object') {
+          return { ok: true, text: '本地子智能体当前配置：\n' + JSON.stringify(cfg, null, 2), data: cfg };
+        }
+        const patch = sanitizeSubAgentPatch(args.config);
+        if (!Object.keys(patch).length) {
+          return { ok: false, text: 'config 里没有可识别的字段。可用字段：' + Object.keys(SUB_AGENT_DEFAULTS).join(', ') };
+        }
+        store.patchSettings({ subAgent: { ...cfg, ...patch } });
+        const now = { ...cfg, ...patch };
+        return { ok: true, text: '已更新本地子智能体配置：\n' + JSON.stringify(patch, null, 2) + '\n\n当前完整配置：\n' + JSON.stringify(now, null, 2), data: now };
+      }
+
+      if (!cfg.enabled) return { ok: false, text: '子智能体已在设置里关闭（sub_agent）。' };
+      if (!args.task || !String(args.task).trim()) return { ok: false, text: '缺少 task：请描述要子智能体完成的任务。' };
+      const ctx = { args, cfg, definitions, store, call, log };
+      return target === 'cloud' ? await runCloudSubAgent(ctx) : await runLocalSubAgent(ctx);
     },
 
     async http_request(args = {}) {

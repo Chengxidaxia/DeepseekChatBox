@@ -354,7 +354,7 @@ body[data-theme='dark'] .chat-item .cbx { --cbx-ring: rgba(255, 255, 255, .26); 
 }
 .foot-row:hover { background: var(--sidebar-nav-hover); }
 .foot-row .label { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.foot-row .hint { font-size: 12px; color: var(--label-caption); }
+.foot-row .hint { font-size: 12px; color: var(--label-caption); margin-right: 6px; }
 
 /* --------------------------- 多选底部操作条 --------------------------- */
 /* 官方是一条横跨整个窗口的底栏：左簇贴着侧栏，右簇靠右，「取消/导出」在最右 */
@@ -2214,6 +2214,24 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 .switch-row .txt { flex: 1; min-width: 0; }
 .switch-row .txt b { display: block; font-size: 14px; font-weight: 500; }
 .switch-row .txt span { display: block; font-size: 12px; line-height: 18px; color: var(--label-caption); }
+/* 设置面板分组：组内各项轻分隔线，组间重分隔线 */
+.set-section + .set-section {
+  margin-top: 20px;
+  padding-top: 18px;
+  border-top: 2px solid var(--border-l3);
+}
+.set-section-title {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: .02em;
+  color: var(--label-secondary);
+  margin: 0 0 8px;
+}
+/* 带危险提示的开关：开关与提示之间不画分隔线，分隔线落到整块下沿 */
+.switch-block { border-bottom: 1px solid var(--border-l1); }
+.switch-row.no-sep { border-bottom: none; padding-bottom: 6px; }
+.switch-block .set-note { margin: 0 0 10px; }
+
 
 .switch {
   position: relative;

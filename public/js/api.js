@@ -298,6 +298,7 @@ export function buildPayload(history, {
         enabled: true,
         cmdEnabled: s.cmdEnabled === true,
         evalEnabled: s.evalEnabled === true,
+        subAgentEnabled: s.subAgentEnabled !== false,
       });
       tools.push(...picked.defs);
     } else {

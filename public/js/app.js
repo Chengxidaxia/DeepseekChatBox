@@ -1737,7 +1737,19 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
         const args = tc.function?.arguments || '{}';
         const t0 = Date.now();
         let out;
-        try { out = await callTool(name, args); }
+        try {
+          // 子智能体要与主智能体共用同一套系统提示：把本轮 system 消息透传给服务端
+          let callArgs = args;
+          if (name === 'sub_agent') {
+            try {
+              const parsed = typeof args === 'string' ? JSON.parse(args) : { ...(args || {}) };
+              const sys = window.__lastPayload?.messages?.[0]?.role === 'system'
+                ? window.__lastPayload.messages[0].content : '';
+              if (sys && !parsed.system) { parsed.system = sys; callArgs = JSON.stringify(parsed); }
+            } catch {}
+          }
+          out = await callTool(name, callArgs);
+        }
         catch (e) { out = { ok: false, text: '工具调用失败：' + e.message }; }
         const content = out.text || JSON.stringify(out);
         const record = { id: tc.id, name, args, content, ok: out.ok !== false, ms: out.elapsedMs ?? (Date.now() - t0), data: out.data };

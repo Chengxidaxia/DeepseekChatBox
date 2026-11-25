@@ -3,6 +3,7 @@
  *       再把变更 PATCH/PUT 回服务端（防抖合并，单机单用户足够）。
  */
 import { getHolidayCached } from './holiday.js';
+import { collectAttachmentData, restoreAttachmentData } from './import-official.js';
 import { uuid } from './util.js';
 
 export const DEFAULT_SETTINGS = {
@@ -33,6 +34,8 @@ export const DEFAULT_SETTINGS = {
   cmdEnabled: false,
   // 危险：在当前浏览器标签页执行 JS，默认关闭（只影响自己，但能读本页 Key/登录态）
   evalEnabled: false,
+  // 子智能体：cloud 用你的 API Key 调官方接口（花钱），local 用本机 Ollama（免费）
+  subAgentEnabled: true,
   // 工具按需加载：每轮最多检索下发几个本地工具（省 token），默认 8
   toolTopK: 8,
   // local = 本机 web_search / fetch_url（可与其他本地工具共存）；official = DeepSeek 官方服务端工具
@@ -417,18 +420,25 @@ export async function importConversations(list, mode = 'merge') {
   return incoming.length;
 }
 
-/** 完整快照导出：v3 起包含分组（各组设置存于 group.settings）与 UI 状态 */
-export async function exportAllData() {
+/** 完整快照导出：v3 起包含分组（各组设置存于 group.settings）与 UI 状态；withAttachments 内联附件二进制 */
+export async function exportAllData({ withAttachments = false } = {}) {
   const snap = await req('/api/store');
-  return {
+  const conversations = Array.isArray(snap.conversations) ? snap.conversations : [];
+  const out = {
     app: 'deepseek-chatbox',
     version: 3,
     exportedAt: Date.now(),
-    conversations: Array.isArray(snap.conversations) ? snap.conversations : [],
+    conversations,
     settings: snap.settings || {},
     ui: snap.ui || {},
     groups: Array.isArray(snap.groups) ? snap.groups : [],
   };
+  if (withAttachments) {
+    const { data, bytes } = await collectAttachmentData(conversations, (id) => attachmentUrl(id));
+    out.attachmentData = data;
+    out.attachmentBytes = bytes;
+  }
+  return out;
 }
 
 /** 完整快照导入：对话 + 分组 + 全局设置 + UI。merge 时分组按 id 合并，replace 时整体替换 */
@@ -436,6 +446,10 @@ export async function importAllData(data, mode = 'merge') {
   const d = Array.isArray(data) ? { conversations: data } : (data || {});
   const incoming = Array.isArray(d.conversations) ? d.conversations : [];
   const incGroups = (Array.isArray(d.groups) ? d.groups : []).filter((g) => g && g.id);
+  // 内联附件先还原（换成当前实例的附件 id），再写对话
+  if (d.attachmentData) {
+    try { await restoreAttachmentData(incoming, d.attachmentData, uploadAttachment); } catch {}
+  }
   const n = await importConversations(incoming, mode);
   if (incGroups.length || mode === 'replace') {
     let next = incGroups;

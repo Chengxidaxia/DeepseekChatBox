@@ -150,6 +150,7 @@ export function pickTools(defs, query, {
   enabled = true,       // localTools 总开关
   cmdEnabled = false,
   evalEnabled = false,
+  subAgentEnabled = true,
 } = {}) {
   if (!enabled && !always.length) return { defs: [], names: [], hits: [] };
   const hits = enabled ? searchTools(defs, query, { topK }) : [];
@@ -161,12 +162,14 @@ export function pickTools(defs, query, {
   for (const h of hits) names.add(h.name);
   if (!cmdEnabled) names.delete('cmd_run');
   if (!evalEnabled) names.delete('eval');
+  if (!subAgentEnabled) names.delete('sub_agent');
   const out = [];
   for (const d of defs || []) {
     const n = d?.function?.name;
     if (!names.has(n)) continue;
     if (d?.meta?.cmd && !cmdEnabled) continue;
     if (d?.meta?.browser && !evalEnabled) continue; // 浏览器执行工具只在 evalEnabled 时下发
+    if (d?.meta?.subagent && !subAgentEnabled) continue; // 子智能体开关
     const web = d?.meta?.web;
     if (web && !always.includes(n)) continue; // 联网工具只由 always 带入
     const clean = { ...d };

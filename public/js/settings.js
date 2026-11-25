@@ -1,6 +1,7 @@
 /* 设置弹窗 */
 import { h, $, download, toast } from './util.js';
-import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, clearAllConversations, meta as storeMeta, saveConversationsNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
+import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, uploadAttachment, clearAllConversations, meta as storeMeta, saveConversationsNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
+import { isZipFile, importOfficialZip } from './import-official.js';
 import { t } from './i18n.js';
 import { appConfirm } from './dialog.js';
 import { listModels, cachedModels } from './api.js';
@@ -21,7 +22,11 @@ function input(type, value, attrs = {}) {
   return el;
 }
 
-function switchRow(title, desc, on, onChange) {
+/**
+ * 一行开关。传了 note（危险提示 HTML）时，提示排在开关**下方**，
+ * 且开关与提示之间不画分隔线（分隔线落到整个块的下沿）。
+ */
+function switchRow(title, desc, on, onChange, note) {
   const sw = h('button', { class: 'switch' + (on ? ' on' : ''), type: 'button', 'aria-pressed': String(on) });
   sw.addEventListener('click', () => {
     const next = !sw.classList.contains('on');
@@ -29,9 +34,22 @@ function switchRow(title, desc, on, onChange) {
     sw.setAttribute('aria-pressed', String(next));
     onChange(next);
   });
-  return h('div', { class: 'switch-row' }, [
+  const row = h('div', { class: 'switch-row' + (note ? ' no-sep' : '') }, [
     h('div', { class: 'txt' }, [h('b', { text: title }), desc ? h('span', { text: desc }) : null]),
     sw,
+  ]);
+  if (!note) return row;
+  return h('div', { class: 'switch-block' }, [
+    row,
+    h('div', { class: 'help danger set-note', html: note }),
+  ]);
+}
+
+/** 设置分组：组内各项是轻分隔线，组与组之间是重分隔线 */
+function section(title, items) {
+  return h('div', { class: 'set-section' }, [
+    title ? h('div', { class: 'set-section-title', text: title }) : null,
+    ...items.filter(Boolean),
   ]);
 }
 
@@ -149,17 +167,23 @@ export function openSettings({ onChange } = {}) {
     voiceSel.addEventListener('change', () => saveSettings({ ttsVoice: voiceSel.value }));
 
     return [
-      field(t('apiKey'), keyWrap, '保存在服务端 <code>data/settings.json</code>（明文，仅本机可读）；浏览器不再保存，也不会随请求发送。'),
-      field(t('baseUrl'), base, '兼容代理地址，例如 <code>https://api.deepseek.com</code>。'),
-      h('div', { class: 'field' }, [h('label', { text: t('theme') }), themeSeg]),
-      h('div', { class: 'field' }, [h('label', { text: t('language') }), langSeg]),
-      field(t('ttsVoice'), voiceSel),
-      switchRow(t('mock'), t('mockHelp'), settings.mock, (v) => {
-        saveSettings({ mock: v });
-        onChange?.({ mock: true });
-      }),
-      h('div', { class: 'field', style: { marginTop: '14px' } }, [
-        h('div', { class: 'help', text: t('shortcuts') }),
+      section('接口与密钥', [
+        field(t('apiKey'), keyWrap, '保存在服务端 <code>data/settings.json</code>（明文，仅本机可读）；浏览器不再保存，也不会随请求发送。'),
+        field(t('baseUrl'), base, '兼容代理地址，例如 <code>https://api.deepseek.com</code>。'),
+      ]),
+      section('外观与语言', [
+        h('div', { class: 'field' }, [h('label', { text: t('theme') }), themeSeg]),
+        h('div', { class: 'field' }, [h('label', { text: t('language') }), langSeg]),
+        field(t('ttsVoice'), voiceSel),
+      ]),
+      section('其它', [
+        switchRow(t('mock'), t('mockHelp'), settings.mock, (v) => {
+          saveSettings({ mock: v });
+          onChange?.({ mock: true });
+        }),
+        h('div', { class: 'field' }, [
+          h('div', { class: 'help', text: t('shortcuts') }),
+        ]),
       ]),
     ];
   }
@@ -204,25 +228,32 @@ export function openSettings({ onChange } = {}) {
     langSel.addEventListener('change', () => saveSettings({ reminder: { ...settings.reminder, language: langSel.value } }));
 
     return [
-      field(t('model'), modelSel, 'deepseek-flash 支持文本 + 图片；deepseek-v4-pro 仅文本。'),
-      h('div', { class: 'field' }, [h('label', { text: t('reasoningEffort') }), effortSeg,
-        h('div', { class: 'help', text: '仅思考模式生效；思考模式下 temperature / top_p 由服务端决定。' })]),
-      field(t('systemPrompt'), sys),
-      h('div', { class: 'field-row' }, [
-        field(t('temperature'), temp),
-        field(t('topP'), topP),
+      section('模型与思考', [
+        field(t('model'), modelSel, 'deepseek-flash 支持文本 + 图片；deepseek-v4-pro 仅文本。'),
+        h('div', { class: 'field' }, [h('label', { text: t('reasoningEffort') }), effortSeg,
+          h('div', { class: 'help', text: '仅思考模式生效；思考模式下 temperature / top_p 由服务端决定。' })]),
       ]),
-      field(t('maxTokens'), maxTok, '范围 1–393216；输入与输出总长受上下文窗口限制。'),
-      field(t('stop'), stop),
-      field('user_id', uid, '仅英文字母、数字、下划线、连字符，UTF-8 不超过 512 字节。'),
-      h('div', { class: 'field' }, [
-        h('label', { text: t('reminder') }),
-        switchRow('latest_reminder', t('reminderHelp'), settings.reminder.enabled, (v) => {
-          saveSettings({ reminder: { ...settings.reminder, enabled: v } });
-        }),
-        h('div', { class: 'field-row', style: { marginTop: '10px' } }, [
-          field(t('location'), loc),
-          field(t('modelLang'), langSel),
+      section('生成参数', [
+        field(t('systemPrompt'), sys),
+        h('div', { class: 'field-row' }, [
+          field(t('temperature'), temp),
+          field(t('topP'), topP),
+        ]),
+        field(t('maxTokens'), maxTok, '范围 1–393216；输入与输出总长受上下文窗口限制。'),
+        field(t('stop'), stop),
+      ]),
+      section('请求标识', [
+        field('user_id', uid, '仅英文字母、数字、下划线、连字符，UTF-8 不超过 512 字节。'),
+      ]),
+      section('时间提醒', [
+        h('div', { class: 'field' }, [
+          switchRow('latest_reminder', t('reminderHelp'), settings.reminder.enabled, (v) => {
+            saveSettings({ reminder: { ...settings.reminder, enabled: v } });
+          }),
+          h('div', { class: 'field-row', style: { marginTop: '10px' } }, [
+            field(t('location'), loc),
+            field(t('modelLang'), langSel),
+          ]),
         ]),
       ]),
     ];
@@ -302,94 +333,168 @@ export function openSettings({ onChange } = {}) {
     }
 
     return [
-      h('div', { class: 'field' }, [
-        h('label', { text: '联网搜索方式' }),
-        webSeg,
-        h('div', { class: 'help', html:
-          webMode === 'local'
-            ? '<strong>本地联网</strong>：由本机直接搜索（Bing，失败自动换备用引擎）并抓取网页正文，'
-              + '不依赖官方工具，所以能和余额、时间等本地工具一起用，也不限定模型。搜索质量取决于公网可达性。'
-            : '<strong>官方服务端</strong>：调用 <code>deepseek_web_search</code> / <code>deepseek_read_url</code>，'
-              + '结果带有官方引用，但接口限制下<strong>无法同时使用本地工具</strong>，且仅 deepseek-flash 支持。' }),
-      ]),
-      switchRow('本地工具（function calling）',
-        '让模型可以调用本机工具：余额、模型、时间、历史、用量、联网搜索/抓取，以及计算、哈希、编解码、JSON、统计、UUID、随机数等小工具。密钥留在服务端。',
-        settings.localTools, (v) => saveSettings({ localTools: v })),
-      h('div', { class: 'field', style: { marginTop: '10px' } }, [
-        h('div', { class: 'help danger', html:
-          '<strong>命令执行（危险，默认关闭）</strong>：开启后模型可调用 <code>cmd_run</code> 在<strong>本机 cmd.exe 直接执行任意命令</strong>，'
-          + '不经过沙箱，能读写文件、访问网络。仅在你明确需要本机自动化时打开，用完建议关掉。'
-          + '执行有 30 秒默认超时与 2 万字符输出上限。' }),
-        switchRow('开启命令执行 cmd_run',
-          '关闭时即使模型想调用也会被服务端拒绝。',
-          settings.cmdEnabled === true, (v) => {
-            saveSettings({ cmdEnabled: v });
-            onChange?.({ cmdEnabled: true });
-          }),
-      ]),
-      h('div', { class: 'field', style: { marginTop: '10px' } }, [
-        h('div', { class: 'help danger', html:
-          '<strong>浏览器代码执行 eval（危险，默认关闭）</strong>：开启后模型可调用 <code>eval</code> 在<strong>当前标签页执行任意 JavaScript</strong>（支持 await）。'
-          + '代码只运行在你的浏览器里，碰不到服务器，但<strong>能读取本页的 API Key 与登录态</strong>——只执行你信任的内容。'
-          + '输出上限 2 万字符；<strong>同步死循环会卡住页面，关掉标签页重开即可</strong>。' }),
-        switchRow('开启浏览器代码执行 eval',
-          '关闭时模型看不到该工具，也无法执行。',
-          settings.evalEnabled === true, (v) => {
-            saveSettings({ evalEnabled: v });
-            onChange?.({ evalEnabled: true });
-          }),
-      ]),
-      (() => {
-        const seg = h('div', { class: 'seg' });
-        for (const n of [4, 8, 16, 999]) {
-          const label = n === 999 ? '全部' : String(n);
-          const b = h('button', { type: 'button', class: (Number(settings.toolTopK) || 8) === n ? 'on' : '', text: label });
-          b.addEventListener('click', () => {
-            saveSettings({ toolTopK: n });
-            onChange?.({ toolTopK: true });
-            render();
-          });
-          seg.append(b);
-        }
-        return h('div', { class: 'field', style: { marginTop: '10px' } }, [
-          h('label', { text: '工具按需加载（省 token）' }),
-          seg,
+      section('联网搜索', [
+        h('div', { class: 'field' }, [
+          h('label', { text: '联网搜索方式' }),
+          webSeg,
           h('div', { class: 'help', html:
-            '每次请求只把与当前问题相关的工具声明给模型（BM25 检索：工具名 + 关键词 + 描述），'
-            + '已调用过的工具会自动保留，多轮工具循环不会断。<strong>关闭/全部</strong>则退回一次声明所有工具（约 5000 tokens）。' }),
-        ]);
-      })(),
-      switchRow(t('jsonMode'), t('jsonModeHelp'), settings.jsonMode, (v) => saveSettings({ jsonMode: v })),
-      switchRow(t('safety'), t('safetyHelp'), settings.safety, (v) => saveSettings({ safety: v })),
-      switchRow(t('autoTitle'), t('autoTitleHelp'), settings.autoTitle, (v) => saveSettings({ autoTitle: v })),
-      h('div', { class: 'field', style: { marginTop: '14px' } }, [h('label', { text: t('docLayout') }), layoutSeg,
-        h('div', { class: 'help', text: '仅上传 PDF / Word / PPT 时生效。图文混排会把文档中的图一起交给模型。' })]),
-      h('div', { class: 'field', style: { marginTop: '18px' } }, [
-        h('label', { text: t('prices') }),
-        h('div', { class: 'help', html:
-          'DeepSeek 采用<strong>峰谷定价</strong>：周一至周五 9:00-12:00、14:00-18:00（北京时间）为高峰，'
-          + '其余时段与周末为<span>空闲</span>，空闲价是高峰价的一半。法定节假日按官方口径算空闲，'
-          + '自动模式会查询公开节假日 API（jiejiariapi / xiaoai / pinjia / Nager 多源兜底，按天缓存）来判断节假日与调休补班。'
-          + '<br>这里只用于本地估算，实际扣费以官方账单为准。' }),
-        priceGrid,
-        h('div', { class: 'peak-row' }, [
-          h('span', { class: 'peak-now', text: peakHint }),
-          peakSeg,
+            webMode === 'local'
+              ? '<strong>本地联网</strong>：由本机直接搜索（Bing，失败自动换备用引擎）并抓取网页正文，'
+                + '不依赖官方工具，所以能和余额、时间等本地工具一起用，也不限定模型。搜索质量取决于公网可达性。'
+              : '<strong>官方服务端</strong>：调用 <code>deepseek_web_search</code> / <code>deepseek_read_url</code>，'
+                + '结果带有官方引用，但接口限制下<strong>无法同时使用本地工具</strong>，且仅 deepseek-flash 支持。' }),
+        ]),
+      ]),
+      section('本地工具', [
+        switchRow('本地工具（function calling）',
+          '让模型可以调用本机工具：余额、模型、时间、历史、用量、联网搜索/抓取，以及计算、哈希、编解码、JSON、统计、UUID、随机数等小工具。密钥留在服务端。',
+          settings.localTools, (v) => saveSettings({ localTools: v })),
+        (() => {
+          const seg = h('div', { class: 'seg' });
+          for (const n of [4, 8, 16, 999]) {
+            const label = n === 999 ? '全部' : String(n);
+            const b = h('button', { type: 'button', class: (Number(settings.toolTopK) || 8) === n ? 'on' : '', text: label });
+            b.addEventListener('click', () => {
+              saveSettings({ toolTopK: n });
+              onChange?.({ toolTopK: true });
+              render();
+            });
+            seg.append(b);
+          }
+          return h('div', { class: 'field', style: { marginTop: '10px' } }, [
+            h('label', { text: '工具按需加载（省 token）' }),
+            seg,
+            h('div', { class: 'help', html:
+              '每次请求只把与当前问题相关的工具声明给模型（BM25 检索：工具名 + 关键词 + 描述），'
+              + '已调用过的工具会自动保留，多轮工具循环不会断。<strong>关闭/全部</strong>则退回一次声明所有工具（约 5000 tokens）。' }),
+          ]);
+        })(),
+      ]),
+      section('子智能体（sub_agent）', [
+        switchRow('启用子智能体',
+          '把独立任务交给子智能体：cloud 用你的 API Key 调官方接口（消耗额度、能力强）；local 用本机 Ollama（免费离线）。子智能体沿用当前会话的系统提示与工具链。',
+          settings.subAgentEnabled !== false, (v) => {
+            saveSettings({ subAgentEnabled: v });
+            onChange?.({ subAgentEnabled: true });
+          }),
+        (() => {
+          const sa = settings.subAgent || {};
+          const setSa = (patch) => saveSettings({ subAgent: { ...(settings.subAgent || {}), ...patch } });
+          const num = (key, label, ph, min, max, step) => {
+            const el = input('number', sa[key] ?? '', {
+              placeholder: ph || '', min: String(min ?? ''), max: String(max ?? ''), step: String(step || '1'),
+            });
+            el.addEventListener('change', () => setSa({ [key]: el.value === '' ? null : Number(el.value) }));
+            return field(label, el);
+          };
+          const ollama = input('text', sa.ollamaUrl || '', { placeholder: 'http://127.0.0.1:11434' });
+          ollama.addEventListener('change', () => setSa({ ollamaUrl: ollama.value.trim() || 'http://127.0.0.1:11434' }));
+          const model = input('text', sa.defaultModel || '', { placeholder: '留空自动选第一个本地模型' });
+          model.addEventListener('change', () => setSa({ defaultModel: model.value.trim() }));
+
+          const swAuto = h('button', { class: 'switch' + (sa.autoStart !== false ? ' on' : ''), type: 'button' });
+          swAuto.addEventListener('click', () => {
+            const n = !swAuto.classList.contains('on');
+            swAuto.classList.toggle('on', n);
+            setSa({ autoStart: n });
+          });
+
+          return h('div', { class: 'field' }, [
+            field('Ollama 服务地址', ollama, '默认 <code>http://127.0.0.1:11434</code>；任何兼容 Ollama 协议的服务都可以。'),
+            h('div', { class: 'switch-row' }, [
+              h('div', { class: 'txt' }, [
+                h('b', { text: '自动启动 Ollama' }),
+                h('span', { text: '连接失败时自动执行 ollama serve（仅本机地址；远程地址不会自动启动）' }),
+              ]),
+              swAuto,
+            ]),
+            field('本地默认模型', model, '留空则自动使用 Ollama 列表里的第一个模型。'),
+            h('div', { class: 'field-row' }, [
+              num('temperature', '本地温度', '0.7', 0, 2, 0.1),
+              num('numCtx', '上下文长度', '8192', 512, 131072, 512),
+            ]),
+            h('div', { class: 'field-row' }, [
+              num('maxTurns', 'local 工具轮数', '4', 1, 12, 1),
+              num('cloudMaxTurns', 'cloud 工具轮数', '6', 1, 12, 1),
+            ]),
+            h('div', { class: 'help', html:
+              '更多参数（<code>top_p</code> / <code>top_k</code> / <code>num_predict</code> / <code>repeat_penalty</code> /'
+              + ' <code>seed</code> / <code>stop</code> / <code>keep_alive</code> / <code>think</code> / <code>format</code> /'
+              + ' <code>cloudModel</code> / <code>timeoutMs</code> 等）可让模型调用'
+              + ' <code>sub_agent({target:"local", action:"config"})</code> 读写。' }),
+          ]);
+        })(),
+      ]),
+      section('危险工具（默认关闭）', [
+      switchRow('开启命令执行 cmd_run',
+        '关闭时即使模型想调用也会被服务端拒绝。',
+        settings.cmdEnabled === true, (v) => {
+          saveSettings({ cmdEnabled: v });
+          onChange?.({ cmdEnabled: true });
+        },
+        '<strong>命令执行（危险，默认关闭）</strong>：开启后模型可调用 <code>cmd_run</code> 在<strong>本机 cmd.exe 直接执行任意命令</strong>，'
+        + '不经过沙箱，能读写文件、访问网络。仅在你明确需要本机自动化时打开，用完建议关掉。'
+        + '执行有 30 秒默认超时与 2 万字符输出上限。'),
+      switchRow('开启浏览器代码执行 eval',
+        '关闭时模型看不到该工具，也无法执行。',
+        settings.evalEnabled === true, (v) => {
+          saveSettings({ evalEnabled: v });
+          onChange?.({ evalEnabled: true });
+        },
+        '<strong>浏览器代码执行 eval（危险，默认关闭）</strong>：开启后模型可调用 <code>eval</code> 在<strong>当前标签页执行任意 JavaScript</strong>（支持 await）。'
+        + '代码只运行在你的浏览器里，碰不到服务器，但<strong>能读取本页的 API Key 与登录态</strong>——只执行你信任的内容。'
+        + '输出上限 2 万字符；<strong>同步死循环会卡住页面，关掉标签页重开即可</strong>。'),
+      ]),
+      section('输出与安全', [
+        switchRow(t('jsonMode'), t('jsonModeHelp'), settings.jsonMode, (v) => saveSettings({ jsonMode: v })),
+        switchRow(t('safety'), t('safetyHelp'), settings.safety, (v) => saveSettings({ safety: v })),
+        switchRow(t('autoTitle'), t('autoTitleHelp'), settings.autoTitle, (v) => saveSettings({ autoTitle: v })),
+        h('div', { class: 'field' }, [h('label', { text: t('docLayout') }), layoutSeg,
+          h('div', { class: 'help', text: '仅上传 PDF / Word / PPT 时生效。图文混排会把文档中的图一起交给模型。' })]),
+      ]),
+      section('计费估算', [
+        h('div', { class: 'field' }, [
+          h('label', { text: t('prices') }),
+          h('div', { class: 'help', html:
+            'DeepSeek 采用<strong>峰谷定价</strong>：周一至周五 9:00-12:00、14:00-18:00（北京时间）为高峰，'
+            + '其余时段与周末为<span>空闲</span>，空闲价是高峰价的一半。法定节假日按官方口径算空闲，'
+            + '自动模式会查询公开节假日 API（jiejiariapi / xiaoai / pinjia / Nager 多源兜底，按天缓存）来判断节假日与调休补班。'
+            + '<br>这里只用于本地估算，实际扣费以官方账单为准。' }),
+          priceGrid,
+          h('div', { class: 'peak-row' }, [
+            h('span', { class: 'peak-now', text: peakHint }),
+            peakSeg,
+          ]),
         ]),
       ]),
     ];
   }
 
   function dataTab() {
-    const importInput = h('input', { type: 'file', accept: 'application/json,.json', hidden: true });
+    const importInput = h('input', { type: 'file', accept: 'application/json,.json,.zip,application/zip', hidden: true });
     importInput.addEventListener('change', async () => {
       const f = importInput.files?.[0];
       if (!f) return;
       try {
-        const data = JSON.parse(await f.text());
-        const n = await importAllData(data, 'merge');
+        let n = 0;
+        if (/\.zip$/i.test(f.name) || await isZipFile(f)) {
+          // 官方版导出包：chat_session_index.json + chat_sessions/*.json + 附件
+          toast('正在解析官方导出包…');
+          const r = await importOfficialZip(f, {
+            uploadAttachment,
+            onProgress: ({ done, imported }) => {
+              if (done && done % 20 === 0) toast(`已处理 ${done} 个附件（成功 ${imported}）…`);
+            },
+          });
+          n = await importAllData({ conversations: r.conversations }, 'merge');
+          toast(`已从官方导出包导入 ${n} 个对话、${r.attachmentsImported} 个附件`
+            + (r.attachmentsSkipped ? `（${r.attachmentsSkipped} 个跳过）` : ''));
+        } else {
+          const data = JSON.parse(await f.text());
+          n = await importAllData(data, 'merge');
+          toast(`已导入 ${n} 个对话（含分组、各组设置与内联附件）`);
+        }
         saveConversationsNow();
-        toast(`已导入 ${n} 个对话及分组，刷新页面后生效`);
         setTimeout(() => location.reload(), 900);
       } catch (e) {
         toast('导入失败：' + e.message);
@@ -400,9 +505,13 @@ export function openSettings({ onChange } = {}) {
     const exportBtn = h('button', { class: 'btn', type: 'button', text: t('exportData') });
     exportBtn.addEventListener('click', async () => {
       try {
-        const snap = await exportAllData();
+        toast('正在打包全部数据（含附件）…');
+        const snap = await exportAllData({ withAttachments: true });
         download(`deepseek-chatbox-${new Date().toISOString().slice(0, 10)}.json`,
           JSON.stringify(snap, null, 2));
+        const nAtt = Object.keys(snap.attachmentData || {}).length;
+        const mb = ((snap.attachmentBytes || 0) / 1048576).toFixed(1);
+        toast(`已导出 ${snap.conversations.length} 个对话、${nAtt} 个附件（${mb} MB）`);
       } catch (e) {
         toast('导出失败：' + e.message);
       }
@@ -445,17 +554,21 @@ export function openSettings({ onChange } = {}) {
     const msgCount = convs.reduce((n, c) => n + (c.messages?.length || 0), 0);
 
     return [
-      h('div', { class: 'field' }, [
-        h('label', { text: '数据存放位置' }),
-        h('div', { class: 'help', html: `全部数据保存在服务端目录：<br><code>${storeMeta.dataDir || '（未知）'}</code><br>` +
-          `含 <code>settings.json</code>（设置与 Key）、<code>conversations.json</code>（对话）、<code>attachments/</code>（图片）、<code>backups/</code>（自动备份）。<br>` +
-          '浏览器不保存任何内容，换浏览器/清缓存都不会丢数据。' }),
+      section('存储位置', [
+        h('div', { class: 'field' }, [
+          h('label', { text: '数据存放位置' }),
+          h('div', { class: 'help', html: `全部数据保存在服务端目录：<br><code>${storeMeta.dataDir || '（未知）'}</code><br>` +
+            `含 <code>settings.json</code>（设置与 Key）、<code>conversations.json</code>（对话）、<code>attachments/</code>（图片）、<code>backups/</code>（自动备份）。<br>` +
+            '浏览器不保存任何内容，换浏览器/清缓存都不会丢数据。' }),
+        ]),
       ]),
-      h('div', { class: 'field' }, [
-        h('label', { text: '对话数据' }),
-        h('div', { class: 'help', text: `共 ${convs.length} 个对话、${msgCount} 条消息。` }),
-        h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' } }, [exportBtn, importBtn, clearBtn, modelBtn]),
-        importInput,
+      section('导入与导出', [
+        h('div', { class: 'field' }, [
+          h('label', { text: '对话数据' }),
+          h('div', { class: 'help', text: `共 ${convs.length} 个对话、${msgCount} 条消息。` }),
+          h('div', { style: { display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '10px' } }, [exportBtn, importBtn, clearBtn, modelBtn]),
+          importInput,
+        ]),
       ]),
     ];
   }
