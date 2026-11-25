@@ -1208,15 +1208,19 @@ function msgTokens(m) {
 }
 
 const CTX_STEPS_K = [32, 64, 128, 256, 512, 1024];
-/** 分段顺序 = 请求体里的真实出现顺序。
- *  messages 先、tools 后（payload 里 tools 是挂在 messages 之后的兄弟字段），
- *  所以「工具定义」排在对话之后 —— 前面那段对话是不随工具变化的前缀，照样能命中缓存。 */
+/**
+ * 分段顺序 = 请求里的真实排布。
+ * tools 分两段：常驻工具（联网搜索/读网页/find_tool，开关不变就永远这几个）排在系统提示之后，
+ * 它们是稳定前缀，缓存一直能命中；后加载工具（检索命中、find_tool 找到的）排在最后，
+ * 每轮都可能换，放队尾不打断前面的缓存。
+ */
 const CTX_SEGS = [
   ['sys', '系统提示', 'seg-sys'],
+  ['toolsStable', '常驻工具', 'seg-tools-stable'],
   ['hist', '历史对话', 'seg-hist'],
   ['tool', '工具结果', 'seg-tool'],
   ['input', '本轮输入', 'seg-input'],
-  ['tools', '工具定义', 'seg-tools'],
+  ['toolsDynamic', '后加载工具', 'seg-tools-dynamic'],
 ];
 
 /** 汇总当前会话的上下文占用与 token 统计。
@@ -1262,7 +1266,7 @@ function convUsage() {
     }).seg;
   } catch {
     // 测量失败（工具定义还没拉到等）就退回最粗的估算，面板不能因此打不开
-    seg = { sys: estimateTokens(e.systemPrompt || '') + 160, tools: 0, hist: 0, tool: 0, input: 0 };
+    seg = { sys: estimateTokens(e.systemPrompt || '') + 160, toolsStable: 0, toolsDynamic: 0, hist: 0, tool: 0, input: 0 };
     msgs.forEach((m, i) => {
       const tk = msgTokens(m);
       if (m.role === 'tool') seg.tool += tk;
@@ -1274,7 +1278,7 @@ function convUsage() {
   let after = 0;
   if (anchorIdx >= 0) for (let i = anchorIdx + 1; i < msgs.length; i++) after += msgTokens(msgs[i]);
   const exact = anchorIdx >= 0;
-  const estSum = seg.sys + seg.tools + seg.hist + seg.tool + seg.input;
+  const estSum = seg.sys + seg.toolsStable + seg.toolsDynamic + seg.hist + seg.tool + seg.input;
   const used = exact
     ? (msgs[anchorIdx].usage.prompt_tokens || 0) + (msgs[anchorIdx].usage.completion_tokens || 0) + after
     : estSum;

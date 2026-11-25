@@ -143,25 +143,33 @@ export function searchTools(defs, query, { topK = 8, minScore = 3 } = {}) {
 }
 
 /**
- * 组装本轮要下发的工具：检索命中 + 显式必带 + 已在对话里用过的（多轮不断链）。
+ * 组装本轮要下发的工具。顺序分两段，只为缓存服务：
  *
- * 缓存友好（DeepSeek 前缀缓存按 token 序列匹配，tools 排在最前，一改就整段 miss）：
- * - sticky 是「上一轮下发过的工具名（有序）」。本轮先原样保留这段，新工具追加到末尾，
- *   集合只增不减，因此 tools 序列的前缀能连续命中缓存。
- * - sticky 超出上限时从最久未用的开始淘汰（一次淘汰只造成一次 miss，可接受）。
+ *   段 1 常驻工具（stable）：联网搜索 / 读网页 / find_tool —— 只要开关没变就永远是这几个，
+ *        顺序也固定，所以它们构成一段「雷打不动」的 tools 前缀。
+ *   段 2 后加载工具（dynamic）：检索命中的、本对话用过的、find_tool 找出来的、上一轮 sticky 的，
+ *        全都排在常驻工具之后；其中 sticky 保持上一轮相对顺序、新工具追加末尾，尽量少动。
+ *
+ * 这样模型换了问题、工具集合发生变化时，常驻段不变 → 前缀（system + 常驻 tools）照样命中缓存。
+ * sticky 超上限时从尾部（最久未用、非常驻）淘汰。
  */
 export function pickTools(defs, query, {
   topK = 8,
-  always = [],          // 必带工具名（如开关控制的联网工具）
+  stable = [],          // 常驻工具名（顺序固定，永远排最前）
+  always = [],          // 旧参数名，等同 stable
+  late = [],            // 后加载工具名（find_tool 找到的）：一律排最后
   usedNames = [],       // 本对话已调用过的工具名
-  sticky = [],          // 上一轮已下发的工具名（保持顺序，前缀稳定）
+  sticky = [],          // 上一轮已下发的工具名（保持顺序）
   maxTools = 24,        // sticky 上限，避免越滚越多把 token 吃光
   enabled = true,       // localTools 总开关
   cmdEnabled = false,
   evalEnabled = false,
   subAgentEnabled = true,
 } = {}) {
-  if (!enabled && !always.length) return { defs: [], names: [], hits: [] };
+  const stableNames = [];
+  for (const n of [...stable, ...always]) if (n && !stableNames.includes(n)) stableNames.push(n);
+  if (!enabled && !stableNames.length) return { defs: [], names: [], stableNames: [], dynamicNames: [], hits: [] };
+
   const hits = enabled ? searchTools(defs, query, { topK }) : [];
   const byName = new Map((defs || []).map((d) => [d?.function?.name, d]));
   const allowed = (n) => {
@@ -170,48 +178,50 @@ export function pickTools(defs, query, {
     if (d?.meta?.cmd && !cmdEnabled) return false;
     if (d?.meta?.browser && !evalEnabled) return false;
     if (d?.meta?.subagent && !subAgentEnabled) return false;
-    if (d?.meta?.web && !always.includes(n)) return false;   // 联网工具只由 always 带入
+    if (d?.meta?.web && !stableNames.includes(n)) return false;   // 联网工具只由常驻段带入
     return true;
   };
 
-  const names = new Set();
-  // 1) always 先入，顺序固定
-  for (const n of always) if (allowed(n)) names.add(n);
-  // 2) sticky：沿用上一轮顺序，保住缓存前缀
-  for (const n of sticky) if (allowed(n)) names.add(n);
-  // 3) 本对话用过的工具必须保留，否则 messages 里的 tool_calls 与 tools 不匹配
-  for (const n of usedNames) if (allowed(n)) names.add(n);
-  // 4) 新命中的追加末尾
-  for (const h of hits) if (allowed(h.name)) names.add(h.name);
-
-  // 输出顺序 = always → sticky → 其余按定义原序；新工具天然排在后半段
+  // ---- 段 1：常驻（顺序固定，只看开关）----
   const order = [];
-  const seen = new Set();
-  const push = (n) => { if (names.has(n) && !seen.has(n)) { seen.add(n); order.push(n); } };
-  for (const n of always) push(n);
-  for (const n of sticky) push(n);
-  for (const n of usedNames) push(n);
-  for (const d of defs || []) push(d?.function?.name);
+  for (const n of stableNames) if (allowed(n)) order.push(n);
 
-  // 超上限时从尾部（最久未用、非 always）淘汰
-  while (order.length > maxTools) {
-    let cut = -1;
-    for (let i = order.length - 1; i >= 0; i--) {
-      if (!always.includes(order[i])) { cut = i; break; }
-    }
-    if (cut < 0) break;
-    order.splice(cut, 1);
-  }
+  // ---- 段 2：后加载 ----
+  const dynamic = [];
+  const seen = new Set(order);
+  const pushDyn = (n) => {
+    if (!n || seen.has(n) || !allowed(n)) return;
+    seen.add(n);
+    dynamic.push(n);
+  };
+  // 2.1 sticky：沿用上一轮顺序（常驻的已在段 1 里，这里自动跳过）
+  for (const n of sticky) pushDyn(n);
+  // 2.2 本对话用过的工具必须保留，否则 messages 里的 tool_calls 与 tools 不匹配
+  for (const n of usedNames) pushDyn(n);
+  // 2.3 本轮检索命中的
+  for (const h of hits) pushDyn(h.name);
+  // 2.4 find_tool 找出来的：一定排最后（每轮可能完全不同，放前面会把整段前缀打散）
+  for (const n of late) pushDyn(n);
 
+  // 超上限时从后加载段的尾部淘汰（常驻段不动）
+  while (order.length + dynamic.length > maxTools && dynamic.length) dynamic.pop();
+
+  const names = [...order, ...dynamic];
   const out = [];
-  for (const n of order) {
+  for (const n of names) {
     const d = byName.get(n);
     if (!d) continue;
     const clean = { ...d };
     delete clean.meta;
     out.push(clean);
   }
-  return { defs: out, names: order, hits: hits.map((h) => ({ name: h.name, score: Number(h.score.toFixed(2)) })) };
+  return {
+    defs: out,
+    names,
+    stableNames: order,
+    dynamicNames: dynamic,
+    hits: hits.map((h) => ({ name: h.name, score: Number(h.score.toFixed(2)) })),
+  };
 }
 
 export { TOOL_KEYS, terms };

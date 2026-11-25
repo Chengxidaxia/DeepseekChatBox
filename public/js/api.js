@@ -272,6 +272,7 @@ export function buildPayload(history, {
   const officialWeb = searchMode === 'official' && (useSearch || useReadUrl);
 
   const tools = [];
+  let stableToolNames = [];   // tools 里属于「常驻段」的那些（顺序固定，排最前）
   if (officialWeb) {
     if (useSearch) tools.push({ type: 'deepseek_web_search' });
     if (useReadUrl) tools.push({ type: 'deepseek_read_url' });
@@ -280,21 +281,23 @@ export function buildPayload(history, {
   // 本地 function：官方服务端工具与任何 function 在接口侧互斥，所以官方模式下全部不发
   let localWebSearch = false;
   let localWebFetch = false;
+  // 常驻工具（只要开关不变就永远这几个，顺序也固定）：联网搜索 / 读网页 / find_tool
+  const stable = [];
   if (!officialWeb) {
-    // 联网工具由开关决定，始终带上；find_tool 元工具常驻，让模型能自己搜工具
-    const always = [];
     for (const def of extraTools || []) {
       const web = def?.meta?.web;
-      if (web === 'search' && useSearch) { always.push(def.function.name); localWebSearch = true; }
-      else if (web === 'fetch' && useReadUrl) { always.push(def.function.name); localWebFetch = true; }
-      else if (def?.function?.name === 'find_tool' && s.localTools !== false) always.push('find_tool');
+      if (web === 'search' && useSearch) { stable.push(def.function.name); localWebSearch = true; }
+      else if (web === 'fetch' && useReadUrl) { stable.push(def.function.name); localWebFetch = true; }
+      else if (def?.function?.name === 'find_tool' && s.localTools !== false) stable.push('find_tool');
     }
-    // find_tool 上一轮找到的工具：本轮必须下发，否则模型拿到搜索结果却调不了
-    for (const n of foundTools || []) if (!always.includes(n)) always.push(n);
+    // find_tool 上一轮找到的工具：本轮必须下发，否则模型拿到搜索结果却调不了。
+    // 但它们是「后加载」的，一律排在 tools 末尾 —— 混进常驻段会把整段缓存前缀打散。
+    const late = [...new Set(foundTools || [])].filter((n) => !stable.includes(n));
     if (s.localTools !== false) {
       const picked = pickTools(extraTools, toolQuery, {
         topK: Number(s.toolTopK) || 8,
-        always,
+        stable,
+        late,
         usedTools,
         sticky: stickyTools,
         enabled: true,
@@ -303,14 +306,19 @@ export function buildPayload(history, {
         subAgentEnabled: s.subAgentEnabled !== false,
       });
       tools.push(...picked.defs);
+      stableToolNames = picked.stableNames;
     } else {
       // 本地工具总开关关了，但联网工具仍要能用
       for (const def of extraTools || []) {
-        if (!always.includes(def?.function?.name)) continue;
+        if (!stable.includes(def?.function?.name)) continue;
         const clean = { ...def }; delete clean.meta;
         tools.push(clean);
       }
+      stableToolNames = tools.map((t) => t.function?.name).filter(Boolean);
     }
+  } else {
+    // 官方联网工具：永远是这两条，天然属于常驻段
+    stableToolNames = tools.map((t) => t.type || t.function?.name).filter(Boolean);
   }
 
   const localToolsDropped = officialWeb && (extraTools || []).length > 0;
@@ -365,6 +373,7 @@ export function buildPayload(history, {
     localToolsDropped,
     webMode: officialWeb ? 'official' : (localWebSearch || localWebFetch ? 'local' : null),
     toolNames: tools.filter((t) => t.type === 'function').map((t) => t.function.name),
+    stableToolNames,
   };
 }
 
@@ -382,7 +391,7 @@ export function measureRequest(history, opts = {}) {
   const built = buildPayload(history, { ...opts, stream: false, wantTitle: false });
   const p = built.payload || {};
   const list = Array.isArray(p.messages) ? p.messages : [];
-  const seg = { sys: 0, tools: 0, hist: 0, tool: 0, input: 0 };
+  const seg = { sys: 0, toolsStable: 0, toolsDynamic: 0, hist: 0, tool: 0, input: 0 };
 
   let lastUser = -1;
   for (let i = list.length - 1; i >= 0; i--) if (list[i].role === 'user') { lastUser = i; break; }
@@ -400,13 +409,20 @@ export function measureRequest(history, opts = {}) {
   });
 
   if (Array.isArray(p.tools) && p.tools.length) {
-    // tools 是随请求体一起发的 JSON，同样进 prompt；每条定义还有固定结构开销
-    seg.tools = estimateTokens(JSON.stringify(p.tools)) + p.tools.length * 4;
+    // tools 是随请求体一起发的 JSON，同样进 prompt；每条定义还有固定结构开销。
+    // 按「常驻 / 后加载」拆两段统计：常驻段只要开关不变就一直命中缓存，后加载段才是每轮会变的。
+    const stableSet = new Set(built.stableToolNames || []);
+    const isStable = (t) => stableSet.has(t?.function?.name || t?.type);
+    const st = p.tools.filter(isStable);
+    const dyn = p.tools.filter((t) => !isStable(t));
+    const tok = (arr) => (arr.length ? estimateTokens(JSON.stringify(arr)) + arr.length * 4 : 0);
+    seg.toolsStable = tok(st);
+    seg.toolsDynamic = tok(dyn);
   }
 
   return {
     seg,
-    total: seg.sys + seg.tools + seg.hist + seg.tool + seg.input,
+    total: seg.sys + seg.toolsStable + seg.toolsDynamic + seg.hist + seg.tool + seg.input,
     messages: list.length,
     toolNames: built.toolNames || [],
     hasTools: built.hasTools,
