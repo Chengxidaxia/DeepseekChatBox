@@ -926,7 +926,7 @@ const FIND_TOOL_KEYS = {
   web_search: ['搜索', '联网', '新闻', '最新消息', '查一下', '天气', '实时'],
   fetch_url: ['打开网址', '抓取网页', '读网页', '这个链接', '读取网页'],
   calculator: ['计算', '算一下', '帮我算', '等于多少', '表达式', '算账', '运算'],
-  hash_text: ['哈希', 'md5', 'sha1', 'sha256', 'sha512', '摘要', '校验值'],
+  hash_text: ['哈希', 'md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512', 'sha3', 'sha3-256', 'sha3-512', '摘要', '校验值', '指纹'],
   base64_codec: ['base64', '编码', '解码'],
   url_codec: ['url编码', 'url解码', '转义', '百分号'],
   json_format: ['json格式', '格式化json', '美化json', '解析json'],
@@ -1568,12 +1568,12 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       type: 'function',
       function: {
         name: 'hash_text',
-        description: '计算文本的 MD5 / SHA1 / SHA256 / SHA512 哈希值（十六进制）。用于校验、生成摘要、比对文件指纹文本。',
+        description: '计算文本的哈希值（十六进制）：MD5 / SHA1 / SHA2（sha224/sha256/sha384/sha512）/ SHA3（sha3-224/sha3-256/sha3-384/sha3-512）。用于校验、生成摘要、比对文件指纹文本。',
         parameters: {
           type: 'object',
           properties: {
             text: { type: 'string', description: '要哈希的文本' },
-            algorithm: { type: 'string', description: 'md5 / sha1 / sha256 / sha512，默认 sha256' },
+            algorithm: { type: 'string', description: 'md5 / sha1 / sha224 / sha256 / sha384 / sha512 / sha3-224 / sha3-256 / sha3-384 / sha3-512，默认 sha256' },
           },
           required: ['text'],
           additionalProperties: false,
@@ -2360,9 +2360,13 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
     async hash_text(args = {}) {
       const text = String(args.text ?? '');
       if (!text) return { ok: false, text: '缺少 text 参数。' };
-      const alg = String(args.algorithm || 'sha256').toLowerCase();
-      if (!['md5', 'sha1', 'sha256', 'sha512'].includes(alg)) {
-        return { ok: false, text: '不支持的算法 ' + alg + '，可选 md5 / sha1 / sha256 / sha512。' };
+      let alg = String(args.algorithm || 'sha256').toLowerCase().trim();
+      // 兼容常见写法：SHA3_256 / SHA3-256 / sha3256 → sha3-256
+      alg = alg.replace(/^sha3[\s_-]*(224|256|384|512)$/, 'sha3-$1');
+      const ALGS = ['md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512',
+        'sha3-224', 'sha3-256', 'sha3-384', 'sha3-512'];
+      if (!ALGS.includes(alg)) {
+        return { ok: false, text: '不支持的算法 ' + alg + '，可选 ' + ALGS.join(' / ') + '。' };
       }
       const digest = crypto.createHash(alg).update(text, 'utf8').digest('hex');
       return { ok: true, text: `${alg}（${text.length} 字符）：${digest}`, data: { algorithm: alg, digest } };

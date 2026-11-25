@@ -2121,6 +2121,15 @@ function startEdit(m) {
   ta.focus();
   ta.setSelectionRange(ta.value.length, ta.value.length);
   ta.style.height = Math.min(320, ta.scrollHeight + 8) + 'px';
+  // 与主输入框保持一致的换行语义：Enter 不干预（保留默认换行），Ctrl/⌘+Enter 也显式换行
+  ta.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && !e.isComposing) {
+      e.preventDefault();
+      const pos = ta.selectionStart;
+      ta.setRangeText('\n', pos, ta.selectionEnd, 'end');
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  });
 
   cancel.addEventListener('click', () => renderChat());
   save.addEventListener('click', () => {
@@ -2993,11 +3002,12 @@ function wire() {
   els.prompt.addEventListener('focus', () => els.shell.classList.add('focused'));
   els.prompt.addEventListener('blur', () => els.shell.classList.remove('focused'));
   els.prompt.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
-      e.preventDefault();
-      if (!els.send.disabled) sendMessage();
-      else if (state.streaming) stopStreaming();
-    }
+    if (e.key !== 'Enter' || e.isComposing) return;
+    // 只有裸 Enter 发送；Shift/Ctrl/⌘/Alt+Enter 一律换行
+    if (e.shiftKey || e.ctrlKey || e.metaKey || e.altKey) return;
+    e.preventDefault();
+    if (!els.send.disabled) sendMessage();
+    else if (state.streaming) stopStreaming();
   });
   els.prompt.addEventListener('paste', (e) => {
     const items = Array.from(e.clipboardData?.items || []);

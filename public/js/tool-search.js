@@ -22,7 +22,7 @@ const TOOL_KEYS = {
   web_search: ['搜索', '联网', '新闻', '最新消息', '查一下', '搜一下', '网上搜', '官网', '实时', '天气', 'search'],
   fetch_url: ['打开网址', '抓取网页', '读网页', '这个链接', '这个页面', 'fetch url', '读取网页'],
   calculator: ['计算', '算一下', '帮我算', '等于多少', '表达式', '加减乘除', '算账', 'calculate', '公式', '运算', '乘法', '除法'],
-  hash_text: ['哈希', 'md5', 'sha1', 'sha256', 'sha512', '摘要', '校验值', '指纹', 'hash'],
+  hash_text: ['哈希', 'md5', 'sha1', 'sha224', 'sha256', 'sha384', 'sha512', 'sha3', 'sha3-256', 'sha3-512', '摘要', '校验值', '指纹', 'hash'],
   base64_codec: ['base64', '编码', '解码', 'encode', 'decode'],
   url_codec: ['url编码', 'url解码', 'encodeuri', '百分号编码', '转义url'],
   json_format: ['json格式', '格式化json', '美化json', '解析json', 'json校验'],
