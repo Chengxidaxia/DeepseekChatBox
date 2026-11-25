@@ -2705,3 +2705,35 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
   .tool-row-head .tool-sub { max-width: 20ch; }
   .tool-group-head .tool-chip { display: none; }
 }
+
+/* sub_agent local 丰富配置：勾选网格 / Key 输入行 / 测试反馈（v1.13.4） */
+.check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 8px 12px;
+  margin: 4px 0 10px;
+}
+.check-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 13px;
+  line-height: 26px;
+  color: var(--label-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+.check-inline input[type='checkbox'] {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--brand-primary);
+  cursor: pointer;
+}
+.input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.input-row input { flex: 1 1 auto; min-width: 0; }
+.input-row .btn { flex: 0 0 auto; }

@@ -1,6 +1,6 @@
 /* 设置弹窗 */
 import { h, $, download, toast } from './util.js';
-import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, uploadAttachment, clearAllConversations, meta as storeMeta, saveConversationsNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
+import { settings, saveSettings, allConversations, importConversations, exportAllData, importAllData, uploadAttachment, clearAllConversations, meta as storeMeta, saveConversationsNow, flushNow, hasApiKey, migratePrices, isPeakNow } from './store.js';
 import { isZipFile, importOfficialZip } from './import-official.js';
 import { t } from './i18n.js';
 import { appConfirm } from './dialog.js';
@@ -387,9 +387,71 @@ export function openSettings({ onChange } = {}) {
             el.addEventListener('change', () => setSa({ [key]: el.value === '' ? null : Number(el.value) }));
             return field(label, el);
           };
+          const toggle = (label, key, def = false) => {
+            const box = input('checkbox', '', { type: 'checkbox' });
+            box.checked = sa[key] ?? def;
+            box.addEventListener('change', () => setSa({ [key]: box.checked }));
+            return h('label', { class: 'check-inline' }, [box, h('span', { text: label })]);
+          };
+          const sel = (key, options, def = '') => {
+            const el = h('select');
+            for (const [v, text] of options) {
+              const o = h('option', { value: String(v), text });
+              el.append(o);
+            }
+            el.value = String(sa[key] ?? def);
+            el.addEventListener('change', () => setSa({ [key]: el.value }));
+            return el;
+          };
+          const effortOptions = [['', '自动（使用请求层默认值）'], ['low', '低'], ['medium', '中'], ['high', '高'], ['xhigh', '超高'], ['max', '极致']];
+          const ctxOptions = [[0, '使用提供商默认值'], [32768, '32K'], [65536, '64K'], [131072, '128K'], [262144, '256K']];
+          const outOptions = [[0, '使用提供商默认值'], [8192, '8K'], [16384, '16K'], [32768, '32K'], [65536, '64K']];
+
+          // 协议切换：Ollama 原生 / OpenAI 兼容自定义接口
+          const proto = h('div', { class: 'seg' });
+          for (const [v, label] of [['ollama', 'Ollama 原生'], ['openai', 'OpenAI 兼容 / 自定义']]) {
+            const b = h('button', { type: 'button', class: (sa.protocol || 'ollama') === v ? 'on' : '', text: label });
+            b.addEventListener('click', () => {
+              for (const x of proto.children) x.classList.remove('on');
+              b.classList.add('on');
+              setSa({ protocol: v });
+              render();
+            });
+            proto.append(b);
+          }
+          const isOpenAI = (sa.protocol || 'ollama') === 'openai';
+
+          const apiBase = input('text', sa.apiBase || '', { placeholder: 'https://api.example.com/v1/chat/completions' });
+          apiBase.addEventListener('change', () => setSa({ apiBase: apiBase.value.trim() }));
+          const apiKey = input('password', sa.apiKey || '', { placeholder: '输入你的 API Key（仅保存在本机/本人云端设置）' });
+          apiKey.addEventListener('change', () => setSa({ apiKey: apiKey.value.trim() }));
+          const eye = h('button', { class: 'btn sm ghost', type: 'button', text: '显示' });
+          eye.addEventListener('click', () => {
+            const show = apiKey.type === 'password';
+            apiKey.type = show ? 'text' : 'password';
+            eye.textContent = show ? '隐藏' : '显示';
+          });
+          const testBtn = h('button', { class: 'btn sm', type: 'button', text: '测试连接' });
+          const testMsg = h('div', { class: 'help' });
+          testBtn.addEventListener('click', async () => {
+            testBtn.disabled = true;
+            testMsg.textContent = '正在测试…';
+            try {
+              const { callTool } = await import('./api.js');
+              const cfgNow = { ...(settings.subAgent || {}), apiBase: apiBase.value.trim(), apiKey: apiKey.value.trim() };
+              flushNow();
+              await new Promise((r) => setTimeout(r, 350));
+              const out = await callTool('sub_agent', { target: 'local', action: 'test', config: cfgNow });
+              testMsg.innerHTML = (out.ok === false ? '<span style="color:var(--state-error)">✗ ' : '✓ ') + String(out.text || '').replace(/</g, '&lt;') + '</span>';
+            } catch (e) {
+              testMsg.textContent = '测试失败：' + e.message;
+            } finally {
+              testBtn.disabled = false;
+            }
+          });
           const ollama = input('text', sa.ollamaUrl || '', { placeholder: 'http://127.0.0.1:11434' });
           ollama.addEventListener('change', () => setSa({ ollamaUrl: ollama.value.trim() || 'http://127.0.0.1:11434' }));
-          const model = input('text', sa.defaultModel || '', { placeholder: '留空自动选第一个本地模型' });
+          const model = input('text', sa.defaultModel || '', { placeholder: '输入模型名称，例如 qwen3:8b 或 openai/gpt-4o' });
           model.addEventListener('change', () => setSa({ defaultModel: model.value.trim() }));
 
           const swAuto = h('button', { class: 'switch' + (sa.autoStart !== false ? ' on' : ''), type: 'button' });
@@ -399,19 +461,56 @@ export function openSettings({ onChange } = {}) {
             setSa({ autoStart: n });
           });
 
+          const efforts = h('div', { class: 'check-grid' });
+          const defaultEfforts = ['low', 'medium', 'high', 'xhigh', 'max'];
+          const currentEfforts = () => (Array.isArray(sa.effortLevels) && sa.effortLevels.length ? sa.effortLevels : defaultEfforts);
+          for (const [v, label] of effortOptions.filter(([v]) => v)) {
+            const box = input('checkbox', '', { type: 'checkbox' });
+            box.checked = currentEfforts().includes(v);
+            box.addEventListener('change', () => {
+              const set = new Set(currentEfforts());
+              if (box.checked) set.add(v); else set.delete(v);
+              setSa({ effortLevels: [...set] });
+            });
+            efforts.append(h('label', { class: 'check-inline' }, [box, h('span', { text: label })]));
+          }
+
           return h('div', { class: 'field' }, [
-            field('Ollama 服务地址', ollama, '默认 <code>http://127.0.0.1:11434</code>；任何兼容 Ollama 协议的服务都可以。'),
-            h('div', { class: 'switch-row' }, [
+            h('div', { class: 'field' }, [h('label', { text: '本地协议' }), proto,
+              h('div', { class: 'help', html: '<code>ollama</code> 走原生 <code>/api/chat</code>；<code>OpenAI 兼容 / 自定义</code> 走 <code>/chat/completions</code>，可接任意兼容服务（含 LM Studio、vLLM、Ollama OpenAI 端口）。' })]),
+            isOpenAI ? h('div', { class: 'field' }, [
+              field('接口地址', apiBase, '填写完整的 chat/completions 地址，或填到 <code>/v1</code> 由程序自动补全；勾选下方「自定义协议」则原样使用。'),
+              field('API Key', h('div', { class: 'input-row' }, [apiKey, eye, testBtn]), '空 Key 也允许（本地服务通常不需要）；Key 只保存在本机/本人云端设置，测试时不写入日志。'),
+              testMsg,
+            ]) : field('Ollama 服务地址', ollama, '默认 <code>http://127.0.0.1:11434</code>；任何兼容 Ollama 协议的服务都可以。'),
+            isOpenAI ? null : h('div', { class: 'switch-row' }, [
               h('div', { class: 'txt' }, [
                 h('b', { text: '自动启动 Ollama' }),
                 h('span', { text: '连接失败时自动执行 ollama serve（仅本机地址；远程地址不会自动启动）' }),
               ]),
               swAuto,
             ]),
-            field('本地默认模型', model, '留空则自动使用 Ollama 列表里的第一个模型。'),
+            field('模型名称', model, isOpenAI ? '必填：OpenAI 兼容接口的模型 ID，例如 <code>qwen3:8b</code> / <code>openai/gpt-4o</code>。' : '留空则自动使用 Ollama 列表里的第一个模型。'),
+            h('div', { class: 'check-grid' }, [
+              toggle('工具调用', 'toolsEnabled', true),
+              toggle('图片输入', 'capImage'),
+              toggle('自定义协议', 'customProtocol'),
+              toggle('仅思考模式', 'thinkingOnly'),
+              toggle('仅非思考模式', 'nonThinkingOnly'),
+              toggle('思考模式', 'thinkingMode', true),
+            ]),
+            h('div', { class: 'help', html: '「自定义协议」开启后直接使用填写的接口地址，不再自动补全 <code>/chat/completions</code> 路径，适用于代理层或服务端已自行处理协议的场景。' }),
+            h('div', { class: 'field-row' }, [
+              field('默认思考强度', sel('defaultEffort', effortOptions)),
+              h('div', { class: 'field' }, [h('label', { text: '支持的思考强度' }), efforts]),
+            ]),
+            h('div', { class: 'field-row' }, [
+              field('输入上下文', sel('contextIn', ctxOptions)),
+              field('输出上限', sel('contextOut', outOptions)),
+            ]),
             h('div', { class: 'field-row' }, [
               num('temperature', '本地温度', '0.7', 0, 2, 0.1),
-              num('numCtx', '上下文长度', '8192', 512, 131072, 512),
+              num('numCtx', 'Ollama num_ctx', '8192', 512, 131072, 512),
             ]),
             h('div', { class: 'field-row' }, [
               num('maxTurns', 'local 工具轮数', '4', 1, 12, 1),

@@ -1076,11 +1076,24 @@ const SUB_AGENT_DEFAULTS = {
   cloudMaxTurns: 6,
   cloudTimeoutMs: 120000,
   cloudTemperature: null,
-  // local（Ollama）
+  // local：Ollama 原生协议，或任意 OpenAI 兼容接口
+  protocol: 'ollama',          // 'ollama' | 'openai'
   ollamaUrl: 'http://127.0.0.1:11434',
+  apiBase: '',                 // OpenAI 兼容接口地址（完整 chat/completions 或 base）
+  apiKey: '',
+  customProtocol: false,       // true=直接用填写的地址，不再自动补 /chat/completions
   autoStart: true,
   autoStartCmd: 'ollama serve',
   defaultModel: '',
+  // 能力声明（让模型/前端知道这个本地模型能做什么）
+  capImage: false,             // 图片输入
+  thinkingOnly: false,         // 仅思考模式
+  nonThinkingOnly: false,      // 仅非思考模式
+  thinkingMode: true,          // 思考模式（可选开关）
+  defaultEffort: '',           // 默认思考强度：''=自动，low/medium/high/xhigh/max
+  effortLevels: [],            // 支持的思考强度：['low','medium','high','xhigh','max']
+  contextIn: 0,                // 输入上下文：0=使用提供商默认值
+  contextOut: 0,               // 输出上下文：0=使用提供商默认值
   temperature: 0.7,
   topP: 0.9,
   topK: 40,
@@ -1109,6 +1122,7 @@ function subAgentConfig(raw) {
       const n = Number(src[k]);
       if (Number.isFinite(n)) out[k] = n;
     } else if (k === 'stop') out[k] = Array.isArray(src[k]) ? src[k].join('\n') : String(src[k]);
+    else if (k === 'effortLevels') out[k] = Array.isArray(src[k]) ? src[k].map(String).filter(Boolean) : [];
     else out[k] = String(src[k]);
   }
   return out;
@@ -1124,6 +1138,7 @@ function sanitizeSubAgentPatch(patch) {
       const n = Number(v);
       if (Number.isFinite(n)) out[k] = n;
     } else if (k === 'stop') out[k] = Array.isArray(v) ? v.join('\n') : String(v);
+    else if (k === 'effortLevels') out[k] = Array.isArray(v) ? v.map(String).filter(Boolean) : [];
     else out[k] = String(v);
   }
   return out;
@@ -1175,6 +1190,123 @@ async function ollamaModels(root) {
     const j = await r.json();
     return (j.models || []).map((m) => m.name).filter(Boolean);
   } catch { return []; }
+}
+
+/* ---- local 的 OpenAI 兼容分支 -------------------------------------------- */
+function openAIChatUrl(cfg) {
+  let s = String(cfg.apiBase || '').trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
+  if (cfg.customProtocol) return s;                       // 用户勾选「自定义协议」：原样使用
+  return s.replace(/\/+$/, '').replace(/\/chat\/completions\/?$/i, '') + '/chat/completions';
+}
+
+/** 设置面板的「测试连接」按钮走这里（sub_agent action=test），不真正跑任务 */
+async function testLocalSubAgent(cfg) {
+  if (cfg.protocol !== 'openai') {
+    const root = ollamaRoot(cfg.ollamaUrl);
+    const alive = await ollamaAlive(root, 3000);
+    if (!alive) return { ok: false, text: `无法连接 Ollama（${root}）。请启动 ollama serve 或改服务地址。` };
+    const models = await ollamaModels(root);
+    return { ok: true, text: `Ollama 连接成功（${root}）${models.length ? '，可用模型：' + models.slice(0, 12).join('、') : '，暂无模型，请先 ollama pull'}。`, data: { root, models } };
+  }
+  const url = openAIChatUrl(cfg);
+  if (!url) return { ok: false, text: '请先填写接口地址（OpenAI 兼容 chat/completions）。' };
+  const headers = { 'content-type': 'application/json' };
+  if (cfg.apiKey) headers.authorization = 'Bearer ' + cfg.apiKey;
+  const payload = {
+    model: String(cfg.defaultModel || 'test'),
+    messages: [{ role: 'user', content: 'ping' }],
+    stream: false,
+    max_tokens: 1,
+  };
+  if (cfg.defaultEffort && cfg.effortLevels.includes(cfg.defaultEffort) && !cfg.nonThinkingOnly) {
+    payload.reasoning_effort = cfg.defaultEffort;
+  }
+  const t0 = Date.now();
+  let r, text = '';
+  try {
+    r = await fetch(url, {
+      method: 'POST', headers, body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(Math.max(5000, Math.min(20000, cfg.timeoutMs || 12000))),
+    });
+    text = await r.text();
+  } catch (e) {
+    return { ok: false, text: `连接失败：${e.message}（${url}）` };
+  }
+  const ms = Date.now() - t0;
+  if (!r.ok) return { ok: false, text: `HTTP ${r.status}：${text.slice(0, 300)}（${url}，${ms}ms）` };
+  return { ok: true, text: `连接成功（HTTP ${r.status}，${ms}ms，${url}）。服务端已响应，模型名填 ${cfg.defaultModel || 'test'}。`, data: { url, status: r.status, ms } };
+}
+
+async function runOpenAILocalSubAgent({ args, cfg, definitions, call, log }) {
+  const url = openAIChatUrl(cfg);
+  if (!url) return { ok: false, text: 'local 使用 OpenAI 兼容接口，但设置里没填接口地址。请到 设置 → 子智能体 填写。' };
+  const headers = { 'content-type': 'application/json' };
+  if (cfg.apiKey) headers.authorization = 'Bearer ' + cfg.apiKey;
+  const model = String(args.model || cfg.defaultModel || '').trim();
+  if (!model) return { ok: false, text: 'local 使用 OpenAI 兼容接口，但没填模型名称。请到 设置 → 子智能体 填写，或在调用时传 model。' };
+  const sys = [
+    '你是一个专注于完成子任务的智能体。只做被交代的事，完成后直接给出结论，不要反问。',
+    args.system || cfg.system || '',
+  ].filter(Boolean).join('\n\n');
+  let userContent = String(args.task);
+  const images = Array.isArray(args.images) ? args.images : (args.image ? [args.image] : []);
+  if (cfg.capImage && images.length) {
+    userContent = [
+      { type: 'text', text: String(args.task) },
+      ...images.filter((x) => typeof x === 'string' && x.trim()).map((x) => ({ type: 'image_url', image_url: { url: x.trim() } })),
+    ];
+  }
+  const messages = [{ role: 'system', content: sys }, { role: 'user', content: userContent }];
+  const tools = cfg.toolsEnabled ? toolsForSubAgent(definitions) : [];
+  const maxTurns = Math.max(1, Math.min(12, Number(cfg.maxTurns) || 4));
+  const trace = [];
+  for (let turn = 0; turn < maxTurns; turn++) {
+    const payload = { model, messages, stream: false };
+    if (cfg.temperature !== null && cfg.temperature !== '') payload.temperature = Number(cfg.temperature);
+    if (Number(cfg.contextOut) > 0) payload.max_tokens = Number(cfg.contextOut);
+    // contextIn 在 Ollama 分支映射 num_ctx；OpenAI 兼容接口没有统一字段，不塞非标准参数。
+    if (tools.length) payload.tools = tools;
+    const effort = cfg.nonThinkingOnly ? '' : (args.effort || cfg.defaultEffort || '');
+    if (effort && cfg.effortLevels.includes(String(effort))) payload.reasoning_effort = String(effort);
+    let r;
+    try {
+      r = await fetch(url, {
+        method: 'POST', headers, body: JSON.stringify(payload),
+        signal: AbortSignal.timeout(Math.max(10000, cfg.timeoutMs)),
+      });
+    } catch (e) {
+      return { ok: false, text: `local 子智能体请求失败：${e.message}（${url}）` };
+    }
+    const raw = await r.text();
+    let j = null;
+    try { j = JSON.parse(raw); } catch {}
+    if (!r.ok || !j) return { ok: false, text: `local 子智能体请求失败：HTTP ${r.status} ${raw.slice(0, 300)}` };
+    const msg = j.choices?.[0]?.message || {};
+    const calls = Array.isArray(msg.tool_calls) ? msg.tool_calls : [];
+    const entry = { role: 'assistant', content: msg.content || '' };
+    if (calls.length) entry.tool_calls = calls;
+    messages.push(entry);
+    if (!calls.length) {
+      return {
+        ok: true,
+        text: msg.content || '（子智能体没有返回内容）',
+        data: { target: 'local', protocol: 'openai', model, url, turns: turn + 1, tools: trace },
+      };
+    }
+    for (const tc of calls) {
+      const name = tc.function?.name;
+      let a = {};
+      try { a = JSON.parse(tc.function?.arguments || '{}'); } catch {}
+      let out;
+      try { out = await call(name, a); } catch (e) { out = { ok: false, text: e.message }; }
+      trace.push({ name, ok: out.ok !== false });
+      messages.push({ role: 'tool', tool_call_id: tc.id, content: String(out.text || JSON.stringify(out)).slice(0, 20000) });
+    }
+  }
+  const last = [...messages].reverse().find((m) => m.role === 'assistant' && m.content);
+  return { ok: true, text: last?.content || '（子智能体达到最大轮数仍未给出结论）', data: { target: 'local', protocol: 'openai', model, url, turns: maxTurns, tools: trace, limitHit: true } };
 }
 
 /** 子智能体的工具链：与主智能体同一套定义，但剔除 sub_agent 自身（防递归）与浏览器端 eval */
@@ -1248,6 +1380,7 @@ async function runCloudSubAgent({ args, cfg, definitions, store, call }) {
 }
 
 async function runLocalSubAgent({ args, cfg, definitions, call, log }) {
+  if (cfg.protocol === 'openai') return runOpenAILocalSubAgent({ args, cfg, definitions, call, log });
   const up = await ensureOllama(cfg, log);
   if (!up.ok) return { ok: false, text: up.text };
   const root = up.root;
@@ -1968,15 +2101,17 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       type: 'function',
       function: {
         name: 'sub_agent',
-        description: '把一件独立的事交给子智能体去做，拿回它的结论。target=cloud 用你自己的 DeepSeek API Key 调官方接口（消耗额度、能力强）；target=local 用本机 Ollama（免费离线、能力取决于本地模型）。子智能体会继承当前会话的系统提示与工具链，可以自己调用工具多轮完成任务。target=local 且 action=config 时可读取或修改本地子智能体设置（模型、温度、上下文、自动启动 Ollama 等）。',
+        description: '把一件独立的事交给子智能体去做，拿回它的结论。target=cloud 用你自己的 DeepSeek API Key 调官方接口（消耗额度、能力强）；target=local 用本机模型：Ollama 原生协议或任意 OpenAI 兼容接口（地址/Key/模型/思考强度/工具调用/图片输入都在设置里配）。子智能体继承当前会话的系统提示与工具链，可多轮调用工具。target=local 且 action=config 可读写本地子智能体配置，action=test 测试接口连通性。',
         parameters: {
           type: 'object',
           properties: {
-            target: { type: 'string', enum: ['cloud', 'local'], description: 'cloud=官方 API；local=本机 Ollama' },
-            action: { type: 'string', enum: ['run', 'config'], description: 'run=执行任务（默认）；config=读写本地配置（仅 target=local）' },
+            target: { type: 'string', enum: ['cloud', 'local'], description: 'cloud=官方 API；local=本机 Ollama 或 OpenAI 兼容接口' },
+            action: { type: 'string', enum: ['run', 'config', 'test'], description: 'run=执行任务（默认）；config=读写本地配置（仅 local）；test=测试 local 接口连通性' },
             task: { type: 'string', description: '交给子智能体的任务，要自包含（它看不到本会话历史）' },
             system: { type: 'string', description: '可选。补充/覆盖子智能体的系统提示，默认沿用当前会话' },
-            model: { type: 'string', description: '可选。覆盖模型：cloud 填 DeepSeek 模型名，local 填 Ollama 模型名' },
+            model: { type: 'string', description: '可选。覆盖模型：cloud 填 DeepSeek 模型名，local 填本地模型名' },
+            images: { type: 'array', items: { type: 'string' }, description: '可选。图片 URL 或 data URL；需在设置里开启「图片输入」，OpenAI 兼容接口才生效' },
+            effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'], description: '可选。覆盖本次思考强度（需在设置里勾选为支持档位）' },
             config: { type: 'object', description: 'action=config 时要修改的字段；省略则返回当前完整配置' },
           },
           required: ['target'],
@@ -2367,6 +2502,13 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
     async sub_agent(args = {}) {
       const target = args.target === 'local' ? 'local' : 'cloud';
       const cfg = subAgentConfig(store.rawSettings ? store.rawSettings().subAgent : null);
+
+      // 设置面板的「测试连接」：不跑任务，只探活并回显可用模型/HTTP 状态
+      if (target === 'local' && args.action === 'test') {
+        // 允许把当前表单配置随请求带来测试（设置落盘有 250ms 防抖，避免测到旧值）
+        const patch = sanitizeSubAgentPatch(args.config || {});
+        return testLocalSubAgent({ ...cfg, ...patch });
+      }
 
       // local 的 config 子工具：不带 config 就返回当前配置；带就按白名单改
       if (target === 'local' && args.action === 'config') {
