@@ -2747,3 +2747,56 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 .about-row { display:flex; gap:12px; font-size:13px; line-height:24px; color:var(--label-secondary); }
 .about-row b { flex:0 0 auto; color:var(--label-primary); font-weight:600; }
 
+
+/* ------------------------------- CPL 插件页 ------------------------------- */
+.cpl-page { display:flex; flex-direction:column; }
+.cpl-toolbar { display:flex; gap:8px; align-items:center; margin:10px 0 8px; flex-wrap:wrap; }
+.cpl-btn { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px; border:1px solid var(--border-l2-thin);
+  border-radius:8px; background:var(--bg-layer-2); color:var(--label-primary); font-size:13px; cursor:pointer; }
+.cpl-btn:hover { background:var(--bg-hover); }
+.cpl-btn:disabled { opacity:.5; cursor:default; }
+.cpl-btn.primary { background:var(--brand-primary); border-color:transparent; color:#fff; }
+.cpl-btn.primary:hover { filter:brightness(1.05); }
+.cpl-btn.ghost { background:transparent; }
+.cpl-btn.danger { color:#d9534f; padding:0 8px; }
+.cpl-btn.danger:hover { background:rgba(217,83,79,.1); }
+
+.cpl-list { display:flex; flex-direction:column; gap:8px; }
+.cpl-card { border:1px solid var(--border-l2-thin); border-radius:10px; background:var(--bg-layer-2); padding:12px 14px; }
+.cpl-card.has-error { border-color:rgba(217,83,79,.45); }
+.cpl-card-head { display:flex; gap:10px; align-items:flex-start; }
+.cpl-icon { width:34px; height:34px; border-radius:8px; object-fit:cover; flex:0 0 auto; background:var(--bg-hover); }
+.cpl-icon.builtin { display:flex; align-items:center; justify-content:center; color:var(--label-secondary); }
+.cpl-title { flex:1; min-width:0; }
+.cpl-name { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+.cpl-name b { font-size:14px; color:var(--label-primary); }
+.cpl-name code { font-size:11px; color:var(--label-secondary); background:var(--bg-hover); padding:1px 6px; border-radius:5px; }
+.cpl-desc { font-size:12.5px; color:var(--label-secondary); margin-top:3px; line-height:1.5; }
+.cpl-actions { display:flex; gap:6px; align-items:center; flex:0 0 auto; }
+
+.cpl-badge { font-size:11px; padding:1px 7px; border-radius:20px; line-height:18px; }
+.cpl-badge.ok { color:#2e7d43; background:rgba(46,125,67,.12); }
+.cpl-badge.bad { color:#d9534f; background:rgba(217,83,79,.12); }
+.cpl-badge.off { color:var(--label-secondary); background:var(--bg-hover); }
+.cpl-tag { font-size:11px; color:var(--label-secondary); border:1px dashed var(--border-l2-thin); padding:0 6px; border-radius:5px; line-height:17px; }
+
+.cpl-switch { width:34px; height:20px; border-radius:20px; border:none; background:var(--border-l2-thin); position:relative; cursor:pointer; padding:0; }
+.cpl-switch .knob { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left .15s; }
+.cpl-switch.on { background:var(--brand-primary); }
+.cpl-switch.on .knob { left:16px; }
+
+.cpl-meta { display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--label-secondary); margin-top:9px; }
+.cpl-error { margin-top:9px; font-size:12.5px; color:#d9534f; background:rgba(217,83,79,.08); border-radius:7px; padding:7px 10px; }
+.cpl-detail { margin-top:12px; padding-top:10px; border-top:1px dashed var(--border-l2-thin); display:flex; flex-direction:column; gap:6px; }
+.cpl-line { display:flex; gap:10px; font-size:12.5px; color:var(--label-secondary); }
+.cpl-line b { flex:0 0 76px; color:var(--label-primary); font-weight:600; }
+.cpl-line a { color:var(--brand-primary); text-decoration:none; word-break:break-all; }
+.cpl-sub { font-size:12px; font-weight:600; color:var(--label-secondary); margin-top:8px; }
+.cpl-logs { font-family:ui-monospace,Consolas,monospace; font-size:11.5px; line-height:1.55; background:var(--bg-base);
+  border:1px solid var(--border-l2-thin); border-radius:8px; padding:8px 10px; max-height:200px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+.cpl-cfg { display:flex; flex-direction:column; gap:6px; }
+.cpl-cfg-row { display:flex; gap:10px; align-items:center; }
+.cpl-cfg-row label { flex:0 0 140px; font-size:12.5px; color:var(--label-secondary); }
+.cpl-cfg-input { flex:1; height:28px; border:1px solid var(--border-l2-thin); border-radius:7px; padding:0 9px;
+  background:var(--bg-base); color:var(--label-primary); font-size:12.5px; }
+.cpl-cfg .cpl-btn { align-self:flex-start; margin-top:4px; }

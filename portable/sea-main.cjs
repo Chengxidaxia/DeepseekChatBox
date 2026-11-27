@@ -10,6 +10,7 @@ const { exec } = require('node:child_process');
 const os = require('node:os');
 
 /*__STORE_CORE__*/
+/*__CPL_CORE__*/
 /*__TOOLS_CORE__*/
 /*__LAN_CORE__*/
 /*__TOKENIZER__*/
@@ -17,10 +18,11 @@ const os = require('node:os');
 // 源码模式（直接 node 运行本文件）时，从磁盘加载共享模块；打包后走内联实现
 const _createStore = typeof createStore !== 'undefined' ? createStore : require('../server/store-core.cjs').createStore;
 const _createTools = typeof createTools !== 'undefined' ? createTools : require('../server/tools-core.cjs').createTools;
+const _createCpl = typeof createCpl !== 'undefined' ? createCpl : require('../server/cpl/cpl.cjs').createCpl;
 const _createLan = typeof createLan !== 'undefined' ? createLan : require('../server/lan-core.cjs').createLan;
 
 const APP_ID = 'deepseek-chatbox';
-const VERSION = '1.15.0';
+const VERSION = '1.16.0';
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
 
@@ -168,7 +170,67 @@ function lanAddresses(limit = 2) {
   return out.sort((x, y) => rank(x) - rank(y)).slice(0, limit);
 }
 
-const tools = _createTools({ store, log: (...a) => console.log('[tools]', ...a), dataDir: DATA_DIR });
+/* CPL 扩展加载器：插件装在 data/cpl/plugins 下，本地模式（可跑 js/py） */
+const cpl = _createCpl({
+  dataDir: DATA_DIR,
+  version: VERSION,
+  mode: 'local',
+  log: (...a) => console.log('[cpl]', ...a),
+  host: {
+    getConversations: () => store.listConversations(),
+    getCurrentConv: () => {
+      const list = store.listConversations();
+      if (!list.length) return null;
+      return list.slice().sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))[0];
+    },
+    createConv: (title) => {
+      const conv = { id: 'c_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), title: title || '新对话', messages: [], createdAt: Date.now(), updatedAt: Date.now() };
+      store.upsertConversation(conv);
+      return conv;
+    },
+    deleteConv: (id) => store.deleteConversation(id),
+    renameConv: (id, title) => {
+      const c = store.getConversation(id);
+      if (!c) return false;
+      store.upsertConversation({ ...c, title: String(title || '').slice(0, 200), updatedAt: Date.now() });
+      return true;
+    },
+    switchConv: () => false,
+    pinConv: (id, pinned) => {
+      const c = store.getConversation(id);
+      if (!c) return false;
+      store.upsertConversation({ ...c, pinned: pinned === undefined ? !c.pinned : Boolean(pinned) });
+      return true;
+    },
+    moveConv: (id, groupId) => {
+      const c = store.getConversation(id);
+      if (!c) return false;
+      store.upsertConversation({ ...c, groupId: groupId || null });
+      return true;
+    },
+    exportConv: (id) => store.getConversation(id) || null,
+    getGroups: () => store.listGroups(),
+    createGroup: (name) => {
+      const g = { id: 'g_' + Date.now().toString(36), name: String(name || '新分组'), createdAt: Date.now() };
+      const list = store.listGroups(); list.push(g); store.setGroups(list); return g;
+    },
+    renameGroup: (id, name) => {
+      const list = store.listGroups(); const g = list.find((x) => x.id === id);
+      if (!g) return false; g.name = String(name || ''); store.setGroups(list); return true;
+    },
+    deleteGroup: (id) => store.deleteGroup(id),
+    touchConv: (c) => store.upsertConversation(c),
+    patchSettings: (p) => store.patchSettings(p),
+    publicSettings: () => store.publicSettings(),
+    keyPreview: () => store.publicSettings().keyPreview,
+    countTokens: (text) => {
+      try { return (globalThis.__dsTokenize ? globalThis.__dsTokenize(String(text ?? '')) : null)?.count ?? Math.ceil(String(text ?? '').length / 1.6); }
+      catch { return Math.ceil(String(text ?? '').length / 1.6); }
+    },
+  },
+});
+
+const tools = _createTools({ store, log: (...a) => console.log('[tools]', ...a), dataDir: DATA_DIR, cpl });
 
 // 默认监听所有网卡：双击就能用手机打开（口令见启动日志）。
 // 只想本机用就加 --local-only；--lan 仍保留，等同于默认行为。
@@ -426,7 +488,71 @@ const server = http.createServer(async (req, res) => {
     if (p === '/api/tools/call' && method === 'POST') {
       const body = await readJson(req);
       if (!body || !body.name) return sendJson(res, 400, { ok: false, text: 'name 必填' });
-      return sendJson(res, 200, await tools.call(body.name, body.arguments));
+      return sendJson(res, 200, await tools.call(body.name, body.arguments, { convId: body.convId || null }));
+    }
+
+    /* ------------------------------- CPL ------------------------------- */
+    if (p === '/api/cpl/plugins' && method === 'GET') {
+      const cat = cpl.catalog();
+      return sendJson(res, 200, {
+        ok: true, plugins: cpl.listPlugins(), stats: cpl.registry.stats(),
+        mode: cpl.mode, version: cpl.version,
+        limits: { hooks: cat.hooks.length, apis: cat.apis.length, jsonHooks: cat.jsonHooks.length, jsonApis: cat.jsonApis.length },
+        allowScripts: cpl.allowScripts,
+      });
+    }
+    if (p === '/api/cpl/catalog' && method === 'GET') return sendJson(res, 200, cpl.catalog());
+    if (p === '/api/cpl/ui' && method === 'GET') return sendJson(res, 200, { ok: true, entries: cpl.uiSnapshot() });
+    if (p === '/api/cpl/logs' && method === 'GET') {
+      return sendJson(res, 200, { ok: true, logs: cpl.logsFor(url.searchParams.get('plugin') || '', Number(url.searchParams.get('limit')) || 200) });
+    }
+    if (p === '/api/cpl/install' && method === 'POST') {
+      const buf = await readBody(req);
+      if (!buf.length) return sendJson(res, 400, { ok: false, error: '请求体为空：请上传插件 zip' });
+      try { return sendJson(res, 200, { ok: true, plugin: await cpl.install(buf) }); }
+      catch (e) { return sendJson(res, 400, { ok: false, error: e.message }); }
+    }
+    if (p === '/api/cpl/reload' && method === 'POST') {
+      const r = await cpl.reloadAll();
+      return sendJson(res, 200, { ok: true, ...r, plugins: cpl.listPlugins() });
+    }
+    if (p === '/api/cpl/hook' && method === 'POST') {
+      const body = await readJson(req);
+      if (!body || !body.hook) return sendJson(res, 400, { ok: false, error: 'hook 必填' });
+      return sendJson(res, 200, { ok: true, ctx: await cpl.emit(body.hook, body.ctx || {}, { from: 'portable' }) });
+    }
+    if (p.startsWith('/api/cpl/plugins/')) {
+      const rest = p.slice('/api/cpl/plugins/'.length);
+      const slash = rest.indexOf('/');
+      const id = decodeURIComponent(slash === -1 ? rest : rest.slice(0, slash));
+      const action = slash === -1 ? '' : rest.slice(slash + 1);
+      if (!action && method === 'GET') {
+        const pl = cpl.getPlugin(id);
+        return pl ? sendJson(res, 200, { ok: true, plugin: pl }) : sendJson(res, 404, { ok: false, error: '插件不存在' });
+      }
+      if (!action && method === 'DELETE') {
+        try { cpl.uninstall(id); return sendJson(res, 200, { ok: true }); }
+        catch (e) { return sendJson(res, 400, { ok: false, error: e.message }); }
+      }
+      if (action === 'enable' || action === 'disable') {
+        try { return sendJson(res, 200, { ok: true, plugin: await cpl.setEnabled(id, action === 'enable') }); }
+        catch (e) { return sendJson(res, 400, { ok: false, error: e.message }); }
+      }
+      if (action === 'config' && method === 'POST') {
+        const body = await readJson(req);
+        const rt = cpl.plugins.get(id);
+        if (!rt) return sendJson(res, 404, { ok: false, error: '插件不存在' });
+        const cache = cpl._cfgCacheFor(id, require('path').join(cpl.pluginsDir, id, '_config.json'), rt.meta.config);
+        for (const [k, v] of Object.entries(body || {})) cache.set(k, v);
+        return sendJson(res, 200, { ok: true, config: Object.fromEntries(cache) });
+      }
+    }
+    if (p.startsWith('/api/cpl/icon/') && method === 'GET') {
+      const id = decodeURIComponent(p.slice('/api/cpl/icon/'.length));
+      const rt = cpl.plugins.get(id);
+      if (!rt || !rt.icon) return sendJson(res, 404, { error: 'no icon' });
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-cache' });
+      return res.end(rt.icon);
     }
     if (p === '/api/conversations' && (method === 'PUT' || method === 'POST')) {
       const body = await readJson(req);
@@ -521,6 +647,11 @@ async function listen(port) {
     server.listen(port, HOST);
   });
 }
+
+/* CPL：把 data/cpl/plugins 下的插件加载进注册表。失败不影响主服务。 */
+cpl.boot()
+  .then((r) => console.log('[cpl] plugins loaded: ' + r.loaded + (r.problems && r.problems.length ? ' | problems: ' + r.problems.join('; ') : '')))
+  .catch((e) => console.log('[cpl] boot failed: ' + e.message));
 
 (async () => {
   for (let port = basePort; port < basePort + 10; port++) {

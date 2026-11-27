@@ -6,6 +6,7 @@ import { t } from './i18n.js';
 import { APP_NAME, APP_REPO, APP_RELEASES, getAppVersion, loadAppVersion } from './version.js';
 import { appConfirm } from './dialog.js';
 import { listModels, cachedModels } from './api.js';
+import { pluginsTab } from './cpl-page.js';
 
 let overlay = null;
 
@@ -137,6 +138,7 @@ export function openSettings({ onChange } = {}) {
       tabBtn('model', t('tabModel'), 'i-brain'),
       tabBtn('gen', t('tabGen'), 'i-wrench'),
       tabBtn('data', t('tabData'), 'i-folder'),
+      tabBtn('plugins', t('tabPlugins'), 'i-puzzle'),
       tabBtn('about', t('tabAbout'), 'i-globe'),
     );
     body.replaceChildren();
@@ -144,6 +146,7 @@ export function openSettings({ onChange } = {}) {
     if (tab === 'model') body.append(...modelTab());
     if (tab === 'gen') body.append(...genTab());
     if (tab === 'data') body.append(...dataTab());
+    if (tab === 'plugins') body.append(...pluginsTab({ onChanged: onChange }));
     if (tab === 'about') body.append(...aboutTab());
   }
 

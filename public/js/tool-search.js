@@ -60,23 +60,30 @@ const TOOL_KEYS = {
 /* 常驻工具里「高频、说明很长」的几个：下发时只留精简说明省 token。
  * 关键：只改发给模型的 payload 副本；find_tool 的检索索引与返回仍读服务端完整定义。 */
 /** 常驻段里「高频只读」工具的固定顺序（见 api.js buildPayload） */
-export const COMPACT_STABLE_ORDER = ['get_balance', 'usage_stats', 'search_history', 'current_time'];
+export const COMPACT_STABLE_ORDER = ['get_balance', 'usage_stats', 'search_history', 'current_time', 'peak_status'];
 
+/* 常驻工具下发时只留最短说明，省 token。
+ * 只影响发给模型的 payload 副本；find_tool 的检索索引与返回读服务端完整定义，
+ * find_tool 自身的定义也保持完整（它是常驻里唯一需要完整说明的）。 */
 const STABLE_COMPACT = {
   get_balance: {
-    description: '查询当前 DeepSeek 账户余额。无参数。',
+    description: '查账户余额。无参数。',
     params: {},
   },
   usage_stats: {
-    description: '本地用量统计：对话数、消息数、输入/输出/缓存命中 tokens。无参数。',
+    description: '本地用量统计：对话数、消息数、token 数。无参数。',
     params: {},
   },
   search_history: {
-    description: '按关键词搜索本地历史对话，返回标题、时间和命中片段。',
-    params: { query: '搜索关键词' },
+    description: '搜本地历史对话。',
+    params: { query: '关键词' },
   },
   current_time: {
-    description: '返回本机当前日期、时间、星期与时区。无参数。',
+    description: '本机当前日期时间与星期。无参数。',
+    params: {},
+  },
+  peak_status: {
+    description: 'DeepSeek 当前是峰时还是谷时、下次切换时间。无参数。',
     params: {},
   },
 };

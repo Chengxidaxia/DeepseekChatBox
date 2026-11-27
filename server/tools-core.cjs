@@ -1462,7 +1462,7 @@ async function runLocalSubAgent({ args, cfg, definitions, call, log }) {
   return { ok: true, text: last?.content || '（子智能体达到最大轮数仍未给出结论）', data: { target: 'local', model, root, turns: maxTurns, tools: trace, limitHit: true } };
 }
 
-function createTools({ store, upstream = 'https://api.deepseek.com', log = console.log, dataDir = '' }) {
+function createTools({ store, upstream = 'https://api.deepseek.com', log = console.log, dataDir = '', cpl = null }) {
   const definitions = [
     {
       type: 'function',
@@ -1494,6 +1494,25 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
         name: 'peak_status',
         description: '查看当前 DeepSeek 峰谷时段（北京时间）：峰时还是谷时、计价规则与下次切换时间。',
         parameters: { type: 'object', properties: {}, additionalProperties: false },
+      },
+    },
+    {
+      type: 'function',
+      function: {
+        name: 'compress_history',
+        description: '压缩对话上下文：把较早的消息交给子模型摘要成一段，保留最近若干条原文，返回新的消息序列与节省的 token 数。上下文快满、或用户要求「压缩历史 / 精简上下文 / 省点 token」时使用。',
+        parameters: {
+          type: 'object',
+          properties: {
+            keep_recent: { type: 'integer', description: '保留最近多少条消息原文，默认 6，最小 2' },
+            target_tokens: { type: 'integer', description: '摘要的目标 token 上限，默认 800，最大 4000' },
+            style: { type: 'string', enum: ['brief', 'detailed'], description: '摘要风格：brief 要点式（默认），detailed 保留更多细节' },
+            instruction: { type: 'string', description: '额外的压缩要求，例如「保留所有代码片段」' },
+            model: { type: 'string', description: '用于压缩的模型，默认跟随当前模型' },
+            dry_run: { type: 'boolean', description: '只统计能省多少，不真正调用模型' },
+          },
+          additionalProperties: false,
+        },
       },
     },
     {
@@ -2263,6 +2282,115 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       }
       lines.push('注：按北京时间计算，未计法定节假日/调休。');
       return { ok: true, text: lines.join('\n'), data: { peak: cur, bj: fmt(now), nextAt: next ? fmt(next) : null } };
+    },
+
+    async compress_history(args = {}, callCtx = {}) {
+      const keep = Math.max(2, Math.min(80, Number(args.keep_recent) || 6));
+      const target = Math.max(100, Math.min(4000, Number(args.target_tokens) || 800));
+      const detailed = args.style === 'detailed';
+
+      let messages = Array.isArray(args.messages) ? args.messages.slice() : null;
+      const convId = callCtx.convId || null;
+      if (!messages) {
+        const conv = convId ? store.getConversation(convId) : null;
+        if (!conv) {
+          return { ok: false, text: '缺少会话上下文：直接在对话中调用本工具即可（前端会自动带上当前会话），或显式传 messages 参数。' };
+        }
+        messages = JSON.parse(JSON.stringify(conv.messages || []));
+      }
+
+      let tok;
+      try { tok = require('./tokenizer-core.cjs').tokenize; } catch { tok = (s) => Math.ceil(String(s).length / 1.6); }
+      const listTok = (list) => list.reduce((n, m) => n + (Number(tok(String(m.content || ''))) || 0), 0);
+      const cap = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '…' : String(s));
+
+      const sys = messages.filter((m) => m.role === 'system');
+      const rest = messages.filter((m) => m.role !== 'system' && String(m.content || '').trim());
+      const tail = rest.slice(-keep);
+      const head = rest.slice(0, Math.max(0, rest.length - keep));
+
+      if (!head.length) {
+        return {
+          ok: true,
+          text: `当前可压缩消息只有 ${rest.length} 条，不超过保留数 ${keep} 条，无需压缩。`,
+          data: { changed: false, before: listTok(messages), after: listTok(messages) },
+        };
+      }
+
+      const before = listTok(messages);
+      const src = head.map((m) => {
+        const role = m.role === 'tool' ? '工具结果' : (m.role === 'user' ? '用户' : '助手');
+        return `${role}：${cap(String(m.content || '').replace(/\s+/g, ' ').trim(), m.role === 'tool' ? 400 : 1200)}`;
+      }).join('\n');
+
+      if (args.dry_run) {
+        const est = Math.max(0, before - listTok(head) + target);
+        return {
+          ok: true,
+          text: `预演（未调用模型）：可把 ${head.length} 条早期消息压成约 ${target} tokens 的摘要，\n上下文 tokens：约 ${before} → 约 ${est}（可省 ${before - est}）。`,
+          data: { changed: false, dryRun: true, before, estimateAfter: est, headCount: head.length, keep: tail.length },
+        };
+      }
+
+      const key = store.getApiKey();
+      if (!key) return { ok: false, text: '本机未配置 API Key，无法调用子模型压缩上下文。' };
+      const s = store.rawSettings ? store.rawSettings() : {};
+      const base = String(s.baseUrl || 'https://api.deepseek.com').replace(/\/+$/, '');
+      const model = String(args.model || s.model || 'deepseek-chat');
+
+      const guide = detailed
+        ? '保留关键事实、数字、结论、代码片段与文件路径，可分点但不要展开无关细节。'
+        : '只保留结论、关键事实与未完成事项，尽量简短。';
+      const extra = args.instruction ? `\n额外要求：${String(args.instruction).slice(0, 500)}` : '';
+      const prompt = [
+        `把下面这段对话历史压缩成不超过 ${target} tokens 的摘要，供后续对话继续使用。`,
+        guide,
+        '不要编造、不要加评论，用中文，直接输出摘要正文。' + extra,
+        '',
+        src,
+      ].join('\n');
+
+      let summary = '';
+      try {
+        const r = await fetch(base + '/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key },
+          body: JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: prompt }],
+            stream: false,
+            max_tokens: Math.min(4096, Math.max(256, target * 2)),
+          }),
+          signal: AbortSignal.timeout(60000),
+        });
+        const j = await r.json().catch(() => null);
+        if (!r.ok || !j) return { ok: false, text: `压缩失败：HTTP ${r.status} ${JSON.stringify(j).slice(0, 200)}` };
+        summary = String(j.choices?.[0]?.message?.content || '').trim();
+      } catch (e) {
+        return { ok: false, text: `压缩请求失败：${e.message}` };
+      }
+      if (!summary) return { ok: false, text: '子模型没有返回摘要内容，请重试或换模型。' };
+
+      const merged = [...sys, { role: 'assistant', content: `【此前对话摘要】\n${summary}` }, ...tail];
+      const after = listTok(merged);
+      const saved = Math.max(0, before - after);
+      const pct = before > 0 ? Math.round((saved / before) * 100) : 0;
+
+      const lines = [
+        `已压缩 ${head.length} 条早期消息 → 1 段摘要（保留最近 ${tail.length} 条原文）`,
+        `上下文 tokens：约 ${before} → 约 ${after}（节省 ${saved}，${pct}%）`,
+        `压缩模型：${model}`,
+        '',
+        '摘要内容：',
+        cap(summary, 1200),
+        '',
+        '说明：本工具只返回压缩结果，不改写会话历史；需要替换时请用户确认后由前端应用。',
+      ];
+      return {
+        ok: true,
+        text: lines.join('\n'),
+        data: { changed: true, convId, before, after, saved, pct, headCount: head.length, keep: tail.length, model, summary, messages: merged },
+      };
     },
 
     async search_history(args = {}) {
@@ -3461,7 +3589,7 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
     },
   };
 
-  async function call(name, args) {
+  async function call(name, args, callCtx = {}) {
     // eval 只在浏览器主线程执行，服务端没有也不应有实现；拦截绕过前端的直接调用
     if (name === 'eval') return { ok: false, text: 'eval 只能在浏览器中执行，不支持服务端调用。' };
     const fn = impl[name];
@@ -3472,11 +3600,35 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       if (typeof args === 'string') {
         try { parsed = args.trim() ? JSON.parse(args) : {}; } catch { parsed = {}; }
       }
-      const res = await fn(parsed || {});
+      const res = await fn(parsed || {}, callCtx || {});
       return { ...res, elapsedMs: Date.now() - started };
     } catch (e) {
       log('[tool] ' + name + ' 失败: ' + e.message);
       return { ok: false, text: `工具 ${name} 执行失败：${e.message}`, elapsedMs: Date.now() - started };
+    }
+  }
+
+  /* v1.16.0：内置工具全部通过 CPL 注册表登记（内置 js 插件形式）。
+   * 没传 cpl 时保持旧行为，便于单独测试本文件。 */
+  if (cpl) {
+    try {
+      cpl.registerBuiltinSync({
+        ns: 'cdcp',
+        name: '内置工具集',
+        uniqueVersion: 1,
+        version: '1.16.0',
+        description: 'ChatBox 内置工具：联网检索、编解码、哈希、二维码、统计、命令执行等本地能力。',
+        module: require('./cpl/builtin/tools.plugin.cjs'),
+        context: { definitions, impl, call, store, log, dataDir },
+      });
+      return {
+        definitions: cpl.registry.toolDefinitions(),
+        names: cpl.registry.toolNames(),
+        call: (name, args, callCtx) => cpl.callTool(name, args, { caller: 'cdcp', ...(callCtx || {}) }),
+        callDirect: call,
+      };
+    } catch (e) {
+      log('[cpl] 内置工具插件注册失败，回退到直接注册：' + e.message);
     }
   }
 

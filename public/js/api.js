@@ -515,13 +515,13 @@ export async function getToolDefinitions() {
   return toolDefCache;
 }
 
-export async function callTool(name, args, { signal } = {}) {
+export async function callTool(name, args, { signal, convId = null } = {}) {
   // eval 只在浏览器主线程执行；开关在前端再校验一次，服务端也会拒绝该工具的调用请求
   if (name === 'eval') return runBrowserEval(args, settings.evalEnabled === true);
   const r = await fetch('/api/tools/call', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ name, arguments: args }),
+    body: JSON.stringify({ name, arguments: args, convId }),
     signal,
   });
   const text = await r.text();

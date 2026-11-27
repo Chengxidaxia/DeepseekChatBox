@@ -51,9 +51,11 @@ console.log(`assets: ${assetCount} files, ${(assetBytes / 1048576).toFixed(1)} M
 // 2) 把存储核心内联进入口（SEA 只能加载单个主文件，不能再 require 本地模块）
 const coreSrc = fs.readFileSync(path.join(root, 'server', 'store-core.cjs'), 'utf8')
   .replace('module.exports = { createStore, DEFAULT_SETTINGS };', 'return { createStore, DEFAULT_SETTINGS };');
-const toolsSrc = fs.readFileSync(path.join(root, 'server', 'tools-core.cjs'), 'utf8')
+let toolsSrc = fs.readFileSync(path.join(root, 'server', 'tools-core.cjs'), 'utf8')
   // 末尾导出可能带调试用的 _internals，统一按结尾那条替换
   .replace(/module\.exports\s*=\s*\{[\s\S]*?\};\s*$/, 'return { createTools };');
+// 内置工具插件在 SEA 里没有真实文件系统，改为由内联块注入的全局对象
+toolsSrc = toolsSrc.replace("require('./cpl/builtin/tools.plugin.cjs')", 'globalThis.__CPL_BUILTIN_PLUGIN');
 if (toolsSrc.includes('module.exports')) throw new Error('tools-core.cjs 的导出语句没替换成功');
 const lanSrc = fs.readFileSync(path.join(root, 'server', 'lan-core.cjs'), 'utf8')
   .replace('module.exports = { createLan };', 'return { createLan };');
@@ -62,14 +64,52 @@ const tokenizerSrc = fs.readFileSync(path.join(root, 'server', 'tokenizer-core.c
   .replace(/module\.exports\s*=\s*\{[\s\S]*?\};\s*$/, 'return { tokenize, loadTokenizer, setTokenizerJson };');
 if (tokenizerSrc.includes('module.exports')) throw new Error('tokenizer-core.cjs 的导出语句没替换成功');
 const tokenizerJson = fs.readFileSync(path.join(root, 'public', 'vendor', 'tokenizer', 'tokenizer.json'), 'utf8');
+// CPL 子系统：7 个模块 + 内置工具插件，用迷你 loader 串起来内联
+const CPL_MODS = {
+  ids: 'server/cpl/ids.cjs',
+  catalog: 'server/cpl/catalog.cjs',
+  registry: 'server/cpl/registry.cjs',
+  zip: 'server/cpl/zip.cjs',
+  package: 'server/cpl/package.cjs',
+  api: 'server/cpl/api.cjs',
+  cpl: 'server/cpl/cpl.cjs',
+  'tools.plugin': 'server/cpl/builtin/tools.plugin.cjs',
+};
+const cplDefs = Object.entries(CPL_MODS).map(([id, rel]) => {
+  const code = fs.readFileSync(path.join(root, rel), 'utf8');
+  if (code.includes('import ')) throw new Error(`CPL 模块 ${rel} 含 ESM 语句，无法内联`);
+  return `  __d[${JSON.stringify(id)}] = function (module, exports, require) {\n${code}\n  };`;
+}).join('\n');
+const cplSrc = `(function () {
+  const __d = {};
+${cplDefs}
+  const __c = {};
+  const __load = function (id) {
+    id = String(id).replace(/^[.][/]/, '').replace(/[.]cjs$/, '').split('/').pop();
+    if (__c[id]) return __c[id].exports;
+    const m = { exports: {} };
+    __c[id] = m;
+    __d[id](m, m.exports, function (p) {
+      if (p.charAt(0) === '.') return __load(p);
+      return require(p);
+    });
+    return m.exports;
+  };
+  const cplMod = __load('cpl');
+  globalThis.__CPL_BUILTIN_PLUGIN = __load('tools.plugin');
+  return cplMod;
+})()`;
+
 const mainSrc = fs.readFileSync(path.join(here, 'sea-main.cjs'), 'utf8');
-for (const tag of ['/*__STORE_CORE__*/', '/*__TOOLS_CORE__*/', '/*__LAN_CORE__*/', '/*__TOKENIZER__*/']) {
+for (const tag of ['/*__STORE_CORE__*/', '/*__CPL_CORE__*/', '/*__TOOLS_CORE__*/', '/*__LAN_CORE__*/', '/*__TOKENIZER__*/']) {
   if (!mainSrc.includes(tag)) throw new Error('sea-main.cjs 缺少内联占位符 ' + tag);
 }
 const bundlePath = path.join(buildDir, 'sea-main.bundle.cjs');
 // 注意：必须用函数式 replacement，否则源码里的 $' / $& 会被 String.replace 当成特殊替换模式
 let bundle = mainSrc.replace('/*__STORE_CORE__*/', () =>
   'const { createStore, DEFAULT_SETTINGS } = (function () {\n' + coreSrc + '\n})();');
+bundle = bundle.replace('/*__CPL_CORE__*/', () =>
+  'const { createCpl } = ' + cplSrc + ';');
 bundle = bundle.replace('/*__TOOLS_CORE__*/', () =>
   'const { createTools } = (function () {\n' + toolsSrc + '\n})();');
 bundle = bundle.replace('/*__LAN_CORE__*/', () =>
@@ -79,7 +119,7 @@ bundle = bundle.replace('/*__TOKENIZER__*/', () =>
   + 'setTokenizerJson(' + tokenizerJson + ');\n'
   + 'globalThis.__dsTokenize = _dsTokenize;');
 fs.writeFileSync(bundlePath, bundle);
-console.log(`bundle: ${(fs.statSync(bundlePath).size / 1024).toFixed(0)} KB (store-core + tools-core + lan-core + tokenizer + 6.4MB 词表已内联)`);
+console.log(`bundle: ${(fs.statSync(bundlePath).size / 1024).toFixed(0)} KB (store-core + cpl + tools-core + lan-core + tokenizer + 6.4MB 词表已内联)`);
 
 // 3) sea-config
 const cfgPath = path.join(buildDir, 'sea-config.json');

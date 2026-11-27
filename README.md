@@ -230,12 +230,13 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 | `eval` | **【默认关闭】浏览器端 JS 执行** | 支持 `await` 与 `console` 回显；服务端拦直接调用，只在浏览器主线程执行 |
 | `sub_agent` | 子智能体（cloud / local） | local 可接 Ollama 原生接口或任意 OpenAI 兼容 `/chat/completions`；支持工具调用、图片输入与思考强度 |
 | `peak_status` | 当前 DeepSeek 峰谷时段 | 北京时间、当前峰/谷、计价规则、下次切换时间（不含法定节假日/调休） |
+| `compress_history` | 压缩对话上下文 | 把较早消息交给子模型摘要，保留最近 N 条原文，返回新序列与节省的 token；不自动改写历史 |
 | `cmd_run` | **【危险】本机 cmd 执行命令** | 退出码 + stdout/stderr；默认关闭，见下 |
 
 - 工具定义由 `GET /api/tools/definitions` 下发，执行走 `POST /api/tools/call`，浏览器不接触 Key
 - 定义里的 `meta.web`（`search` / `fetch`）只用于前端区分「联网工具」与「本地工具」，发请求前会被剥掉；
   `meta.cmd` 用于前端按 `cmdEnabled` 开关过滤
-- **工具按需加载（搜索引擎）**：43 个工具如果每次全量声明，光定义就约 5700 tokens/轮
+- **工具按需加载（搜索引擎）**：44 个工具如果每次全量声明，光定义就约 5800 tokens/轮
   （新增这 6 个只多约 250 tokens，因为描述都控制在两行内）。
   现在用 `public/js/tool-search.js` 的 BM25 检索：工具名 + 强关键词 + 描述分词打分，
   每轮只下发与当前问题相关的工具（设置 → 生成 → 「工具按需加载」可选 4/8/16/全部）。
@@ -263,6 +264,90 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 - **连续多轮、以及同一轮里的多个调用会合并成一张折叠卡片**
   （`工具调用 ×N` + 工具名汇总），点开才列出每次调用的参数、结果与耗时，不再一行一个占满屏幕
 - 关闭开关即不声明 `tools`，请求体退回普通对话
+
+### 插件系统 CPL（v1.16.0）
+
+**CPL = ChatBox Plugin Loader**，扩展加载器。插件装一次，可以拦消息、改上下文、加工具、加界面入口。
+
+#### 插件包结构
+
+```
+myplugin.zip
+├─ data.json        清单：id / uniqueVersion / name / description / author / permissions / requires …
+├─ contents/*.json  方法定义（非复杂逻辑用这个就够了）
+├─ scripts/*.js|py  代码（复杂逻辑；可只放其中一个）
+├─ assets/          素材
+└─ fav.png          图标（缺了用默认图标）
+```
+
+三种写法可以共存：`json` 负责声明式拦截，`js` / `py` 负责写逻辑。同一个插件里的方法共享一个命名空间。
+
+#### ID 体系
+
+```
+[namespace@][版本条件]:方法名
+```
+
+| 写法 | 含义 |
+|---|---|
+| `function` | cdcp 命名空间的 `function`（chatbox 自身对象，命名空间可省） |
+| `myplug:onSend` | 插件 `myplug` 的方法 |
+| `myplug@13520:onSend` | 同上，且唯一版本号必须等于 13520 |
+| `myplug@>=13520:onSend` | 大于等于；另支持 `>` `=` `<` `<=` |
+| `myplug@[13520,14520]:onSend` | 闭区间；也支持 `(a,b)` `[a,b)` `(a,b]` |
+
+- `@` 与版本条件必须**同时出现或同时省略**
+- 版本号是 **unsigned long long**（与语义版本无关，纯数字，用 BigInt 比较）
+- 保留命名空间：`cdcp`（chatbox 自身）、`cpl`（加载器）
+- **同名对象插件优先**；插件之间同名的，后加载者胜并记入冲突列表
+
+#### 接口规模
+
+| 侧 | hook 点 | 能力 API |
+|---|---|---|
+| `json` | 91 | 78 |
+| `js` / `py` | 169 | 117 |
+
+hook 覆盖：消息 / 上下文 / 请求响应 / 工具 / 会话 / 分组 / 设置 / 存储 / 界面 / 网络 / 应用 / 插件 / 模型 / 子智能体 / 附件 / 检索 / 用量。
+API 覆盖：消息 / 会话 / 工具 / hook / 事件总线 / KV / 配置 / 网络 / 文件 / 界面 / 日志 / 工具函数 / AI / 上下文 / 平台。
+
+实测口径：`GET /api/cpl/catalog` 会返回真实数量，README 不写死估算值。
+
+#### json 方法长什么样
+
+```json
+{
+  "id": "stamp",
+  "name": "给消息加标记",
+  "actions": [
+    { "type": "message.before_send", "event": "ctx.set", "args": [{ "stamped": true }] }
+  ],
+  "before": [],
+  "after": []
+}
+```
+
+- `type` = 触发条件（hook 点），`event` = 要触发的事件（cdcp API / hook / 插件自定义事件），`args` 传给事件
+- `args` 里的 `"{{content}}"` 会从上下文取值
+- `event: "ctx.set"` 是约定出口：参数对象直接合并回上下文（可改写能力）
+- `before` / `after` 填完整 ID，决定同一点上多个处理器的先后（拓扑排序）
+
+#### 管理页
+
+「设置 → 插件」：
+
+- 安装（上传 zip）、启用 / 禁用、卸载、全部重载
+- 每个插件显示接口计数（工具 / Hook / API / UI）、权限、前置依赖、错误信息
+- 详情里可展开运行日志与插件自己的配置项（`data.json` 的 `config` schema）
+
+#### 安全边界（不夸大）
+
+- 插件在**服务端执行**，权限需在 `data.json` 里声明（`net` / `fs` / `ui` / `tools` / `kv` / `config` / `ai` / `store` …）
+- `js` 走 `node:vm` 沙箱、`py` 走子进程；沙箱挡手滑，**挡不住蓄意逃逸** —— 只装信任的包
+- hook 处理器有超时（5s）与熔断（连续失败 5 次停 60s），插件异常不会拖垮主程序
+- 云端专版：**只接受 json 插件**（无可执行代码），插件定义存在浏览器侧、按账号隔离，服务端在请求内临时执行后即销毁
+
+---
 
 ### 会话分组与独立设置
 | 功能 | 实现方式 |
@@ -327,7 +412,7 @@ DeepSeekChatBox.exe 同级 data/    # 便携版：跟着 exe 走
 Inter 只覆盖拉丁字符（`unicode-range` 与官方一致），中文继续走系统字体 —— 这也是官方做法，不是缺字。
 官方空态没有「建议胶囊」，本项目的是自创组件，仅沿用官方的 18px 圆角与 13px/500 语言。
 
-### 近期能力（v1.12.6 – v1.15.0）
+### 近期能力（v1.12.6 – v1.16.0）
 
 | 能力 | 版本 | 说明 |
 |---|---|---|
@@ -343,6 +428,11 @@ Inter 只覆盖拉丁字符（`unicode-range` 与官方一致），中文继续�
 | 峰谷查询 `peak_status` | v1.14.3 | 查当前峰/谷、计价规则与下次切换；版本号同时改为后端唯一真源 |
 | 思考块展开状态保持 | v1.15.0 | 手动打开的历史思考块在重绘 / 模型状态切换后不被关闭，内容按消息 id 精确定位 |
 | 输入草稿按会话保留 | v1.15.0 | 切走时保留、切回时恢复；只存内存，刷新即丢，发送后作废 |
+| 会话草稿与思考块 | v1.15.0 | 输入草稿按会话保留（内存）、历史思考块展开状态不被重绘重置 |
+| **CPL 扩展加载器** | v1.16.0 | 插件 zip 安装 / 启停 / 卸载 / 热重载；169 个 hook + 117 个 API；json / js / py 三种写法 |
+| 内置工具插件化 | v1.16.0 | 44 个内置工具全部通过 CPL 注册表登记，以后加工具走同一套注册 |
+| 上下文压缩 `compress_history` | v1.16.0 | 调子模型压缩历史，保留最近 N 条，报告节省 token |
+| 工具轮次上限 1024 | v1.16.0 | 单次回复内「请求工具 → 执行 → 再请求」的往返上限从 10 提到 1024 |
 
 ---
 
@@ -354,6 +444,15 @@ deepseek-chatbox/
 ├─ server/store-core.cjs   存储核心（原子写、备份、附件、Key 掩码），源码版与便携版共用
 ├─ server/tools-core.cjs   内置工具实现（余额/模型/时间/历史/用量 + 联网搜索/网页抓取）
 ├─ server/lan-core.cjs     局域网口令（Cookie 会话、登录页、未授权拦截）
+├─ server/cpl/             CPL 扩展加载器
+│  ├─ cpl.cjs              引擎：装载/生命周期/hook 分发/沙箱/用户隔离
+│  ├─ ids.cjs              ID 体系（namespace@版本条件:方法名，含区间与比较符）
+│  ├─ registry.cjs         注册表：工具/hook/API/UI、冲突仲裁、before-after 拓扑排序
+│  ├─ catalog.cjs          接口目录（169 hook / 117 API，含 json 子集）
+│  ├─ package.cjs          插件包校验（data.json、方法定义、路径安全）
+│  ├─ zip.cjs              零依赖 zip 读取
+│  ├─ api.cjs              能力桥（117 个 API 的实现）
+│  └─ builtin/tools.plugin.cjs  内置工具插件（44 个工具都经它注册）
 ├─ data/                   运行时生成：设置 / 对话 / 附件 / 备份
 ├─ package.json
 ├─ 启动.bat                纯 ASCII + CRLF（chcp 65001 让程序中文日志正常显示），双击即用（源码版）

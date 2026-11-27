@@ -802,7 +802,7 @@ const draftText = new Map();   // convId -> string
 
 /* 一次提问最多允许「模型请求工具 → 本地执行 → 再请求」的轮数。
    用尽后不再静默中断，而是告诉模型收尾（禁用工具，只让它基于已有结果作答）。 */
-const MAX_TOOL_ROUNDS = 10;
+const MAX_TOOL_ROUNDS = 1024;
 const TOOL_LIMIT_NOTE = (n) => `【系统提示】本次提问中，「请求工具 → 看结果 → 再请求」的往返轮次已经用满（上限 ${n} 轮，`
   + '每轮可以同时调用多个工具），工具通道现已关闭，不能再发起任何工具调用。'
   + '请立即基于上面已经拿到的工具结果直接回答用户；'
@@ -1840,7 +1840,7 @@ async function runStream({ conv, assistant, history, continueMode, prefix }) {
               if (sys && !parsed.system) { parsed.system = sys; callArgs = JSON.stringify(parsed); }
             } catch {}
           }
-          out = await callTool(name, callArgs, { signal: state.controller?.signal });
+          out = await callTool(name, callArgs, { signal: state.controller?.signal, convId: conv.id });
         }
         catch (e) {
           if (state.stopped) break;   // 停止时工具请求被 abort，不算工具失败
