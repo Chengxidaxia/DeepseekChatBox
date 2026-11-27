@@ -22,7 +22,7 @@ const _createCpl = typeof createCpl !== 'undefined' ? createCpl : require('../se
 const _createLan = typeof createLan !== 'undefined' ? createLan : require('../server/lan-core.cjs').createLan;
 
 const APP_ID = 'deepseek-chatbox';
-const VERSION = '1.16.0';
+const VERSION = '1.16.1';
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
 

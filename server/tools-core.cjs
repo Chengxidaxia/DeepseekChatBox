@@ -2299,8 +2299,15 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
         messages = JSON.parse(JSON.stringify(conv.messages || []));
       }
 
+      // tokenize 返回 {count, model, vocabSize}，这里统一取数字
       let tok;
-      try { tok = require('./tokenizer-core.cjs').tokenize; } catch { tok = (s) => Math.ceil(String(s).length / 1.6); }
+      try {
+        const raw = require('./tokenizer-core.cjs').tokenize;
+        tok = (s) => {
+          const r = raw(String(s ?? ''));
+          return Number(r && typeof r === 'object' ? r.count : r) || 0;
+        };
+      } catch { tok = (s) => Math.ceil(String(s).length / 1.6); }
       const listTok = (list) => list.reduce((n, m) => n + (Number(tok(String(m.content || ''))) || 0), 0);
       const cap = (s, n) => (String(s).length > n ? String(s).slice(0, n) + '…' : String(s));
 
@@ -2324,11 +2331,21 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
       }).join('\n');
 
       if (args.dry_run) {
-        const est = Math.max(0, before - listTok(head) + target);
+        const headTok = listTok(head);
+        const est = Math.max(0, before - headTok + target);
+        const save = before - est;
+        const detail = { changed: false, dryRun: true, before, estimateAfter: est, saved: Math.max(0, save), headCount: head.length, headTokens: headTok, keep: tail.length };
+        if (save <= 0) {
+          return {
+            ok: true,
+            text: `预演（未调用模型）：早期 ${head.length} 条消息只有约 ${headTok} tokens，压成 ${target} tokens 的摘要反而更长，当前不必压缩。\n（上下文共约 ${before} tokens；想强行压缩可调小 target_tokens，或直接去掉 dry_run 试跑）`,
+            data: detail,
+          };
+        }
         return {
           ok: true,
-          text: `预演（未调用模型）：可把 ${head.length} 条早期消息压成约 ${target} tokens 的摘要，\n上下文 tokens：约 ${before} → 约 ${est}（可省 ${before - est}）。`,
-          data: { changed: false, dryRun: true, before, estimateAfter: est, headCount: head.length, keep: tail.length },
+          text: `预演（未调用模型）：可把 ${head.length} 条早期消息（约 ${headTok} tokens）压成约 ${target} tokens 的摘要，\n上下文 tokens：约 ${before} → 约 ${est}（可省 ${save}，${Math.round((save / before) * 100)}%）`,
+          data: detail,
         };
       }
 
