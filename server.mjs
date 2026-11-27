@@ -84,7 +84,7 @@ function lanAddresses(limit = 2) {
 // 插件跑在服务端；host 把「当前会话/设置/token 统计」这类宿主能力借给插件。
 const cpl = createCpl({
   dataDir: DATA_DIR,
-  version: APP_VERSION || '1.16.0',
+  version: APP_VERSION,   // 读不到 package.json 时为空串，不再写死版本号
   mode: 'local',
   log,
   host: {
