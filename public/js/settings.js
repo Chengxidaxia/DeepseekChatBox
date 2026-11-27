@@ -6,7 +6,6 @@ import { t } from './i18n.js';
 import { APP_NAME, APP_REPO, APP_RELEASES, getAppVersion, loadAppVersion } from './version.js';
 import { appConfirm } from './dialog.js';
 import { listModels, cachedModels } from './api.js';
-import { pluginsTab } from './cpl-page.js';
 
 let overlay = null;
 
@@ -123,12 +122,17 @@ export function openSettings({ onChange } = {}) {
   }
   document.addEventListener('keydown', onKey);
 
-  function tabBtn(id, label, iconId) {
-    const b = h('button', { type: 'button', class: 'settings-nav-item' + (id === tab ? ' on' : '') }, [
+  function tabBtn(id, label, iconId, onPick) {
+    const b = h('button', { type: 'button', class: 'settings-nav-item' + (id === tab ? ' on' : '') + (onPick ? ' is-link' : '') }, [
       icon(iconId),
       h('span', { text: label }),
+      onPick ? h('span', { class: 'nav-go', text: '↗' }) : null,
     ]);
-    b.addEventListener('click', () => { tab = id; render(); });
+    b.addEventListener('click', () => {
+      if (onPick) { onPick(); return; }
+      tab = id;
+      render();
+    });
     return b;
   }
 
@@ -138,7 +142,11 @@ export function openSettings({ onChange } = {}) {
       tabBtn('model', t('tabModel'), 'i-brain'),
       tabBtn('gen', t('tabGen'), 'i-wrench'),
       tabBtn('data', t('tabData'), 'i-folder'),
-      tabBtn('plugins', t('tabPlugins'), 'i-puzzle'),
+      // 插件管理是独立页面 /cpl：整页打开，不再挤在设置弹窗里
+      tabBtn('plugins', t('tabPlugins'), 'i-puzzle', () => {
+        close();
+        location.href = '/cpl';
+      }),
       tabBtn('about', t('tabAbout'), 'i-globe'),
     );
     body.replaceChildren();
@@ -146,7 +154,6 @@ export function openSettings({ onChange } = {}) {
     if (tab === 'model') body.append(...modelTab());
     if (tab === 'gen') body.append(...genTab());
     if (tab === 'data') body.append(...dataTab());
-    if (tab === 'plugins') body.append(...pluginsTab({ onChanged: onChange }));
     if (tab === 'about') body.append(...aboutTab());
   }
 

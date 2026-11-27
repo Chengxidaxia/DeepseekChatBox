@@ -3614,10 +3614,10 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
     try {
       cpl.registerBuiltinSync({
         ns: 'cdcp',
-        name: '内置工具集',
+        name: 'ChatBox 自身',
         uniqueVersion: 1,
         version: '1.16.0',
-        description: 'ChatBox 内置工具：联网检索、编解码、哈希、二维码、统计、命令执行等本地能力。',
+        description: 'ChatBox 主体运行时（命名空间 cdcp）：会话、消息、模型与内置工具都挂在这里；内置工具经它注册。',
         module: require('./cpl/builtin/tools.plugin.cjs'),
         context: { definitions, impl, call, store, log, dataDir },
       });

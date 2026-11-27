@@ -26,6 +26,8 @@ async function api(path, opt) {
 }
 
 const STATUS_TEXT = { enabled: '已启用', disabled: '已禁用', error: '加载失败', installed: '已安装' };
+/* 内置插件（cdcp = ChatBox 自身、cpl = 加载器）自带图标，路径与打包后的 public/assets 一致 */
+const BUILTIN_ICONS = { cdcp: '/assets/plugin-cdcp.png', cpl: '/assets/plugin-cpl.png' };
 
 /* 云端插件存在浏览器（按账号/设备天然隔离），结构对齐服务端返回的 publicPlugin */
 function cloudLoad() {
@@ -58,6 +60,47 @@ function cloudToPlugin(pkg, enabled = true) {
     iconData: pkg.icon || null,
     cloudPkg: pkg,
   };
+}
+
+/** 是否为独立的插件管理页路由：/cpl、/cpl/（也兼容 #/cpl，云端静态托管下的保底入口） */
+export function isCplRoute(pathname = location.pathname, hash = location.hash) {
+  return /^\/cpl\/?$/.test(pathname) || /^#\/?cpl\/?$/.test(hash || '');
+}
+
+/** 独立页的返回地址：路径式路由回根，hash 式路由去掉 hash */
+function cplBackHref() {
+  if (/^\/cpl\/?$/.test(location.pathname)) return '/';
+  return location.pathname + location.search;
+}
+
+/**
+ * 独立页面 /cpl：整页插件管理，不进入聊天界面、不参与会话路由。
+ * 调用方（boot）负责：已拉完 store / 已套主题与语言，然后 return。
+ */
+export function mountCplStandalone() {
+  document.title = '插件管理 - Deepseek ChatBox';
+  document.body.classList.add('cpl-standalone');
+  const appEl = document.getElementById('app');
+  if (appEl) appEl.hidden = true;
+
+  const body = h('main', { class: 'cpl-sa-body' });
+  const back = h('a', { class: 'cpl-sa-back', href: cplBackHref(), title: '返回对话' }, [
+    h('span', { class: 'cpl-sa-arrow', text: '←' }),
+    h('span', { text: '返回对话' }),
+  ]);
+  const head = h('header', { class: 'cpl-sa-head' }, [
+    h('div', { class: 'cpl-sa-brand' }, [
+      h('div', { class: 'cpl-sa-logo' }, [icon('i-puzzle')]),
+      h('div', { class: 'cpl-sa-title' }, [
+        h('b', { text: '插件管理' }),
+        h('span', { text: 'ChatBox Plugin Loader' }),
+      ]),
+    ]),
+    back,
+  ]);
+  const page = h('div', { class: 'cpl-sa' }, [head, body]);
+  document.body.append(page);
+  body.append(...pluginsTab({}));
 }
 
 export function pluginsTab({ onChanged } = {}) {
@@ -110,10 +153,12 @@ export function pluginsTab({ onChanged } = {}) {
   }
 
   function pluginIcon(p) {
-    if (p.builtin) return h('div', { class: 'cpl-icon builtin' }, [icon('i-wrench')]);
-    const fallback = () => h('div', { class: 'cpl-icon builtin' }, [icon('i-puzzle')]);
-    if (p.iconData) return h('img', { class: 'cpl-icon', src: p.iconData, alt: '' });
-    const img = h('img', { class: 'cpl-icon', src: `/api/cpl/icon/${encodeURIComponent(p.id)}`, alt: '', loading: 'lazy' });
+    const fallback = () => h('div', { class: 'cpl-icon builtin' }, [icon('i-wrench')]);
+    const src = p.iconData
+      || (p.builtin ? BUILTIN_ICONS[p.id] : `/api/cpl/icon/${encodeURIComponent(p.id)}`)
+      || '';
+    if (!src) return fallback();
+    const img = h('img', { class: 'cpl-icon', src, alt: '', loading: 'lazy' });
     img.addEventListener('error', () => img.replaceWith(fallback()), { once: true });
     return img;
   }
@@ -151,12 +196,13 @@ export function pluginsTab({ onChanged } = {}) {
     const counts = p.counts || {};
     const isOpen = openDetail.has(p.id);
 
-    const sw = p.builtin ? null : (() => {
+    const sw = (() => {
       const b = h('button', {
         class: 'cpl-switch' + (p.enabled ? ' on' : ''),
         type: 'button',
-        title: p.enabled ? '点击禁用' : '点击启用',
+        title: p.builtin ? '核心插件，不可禁用' : (p.enabled ? '点击禁用' : '点击启用'),
       }, [h('span', { class: 'knob' })]);
+      if (p.builtin) b.disabled = true;
       b.addEventListener('click', async () => {
         b.disabled = true;
         try { await togglePlugin(p); }
@@ -173,7 +219,6 @@ export function pluginsTab({ onChanged } = {}) {
           h('b', { text: p.name }),
           h('code', { text: `${p.id}@${p.uniqueVersion}` }),
           badge(p.status),
-          p.builtin ? h('span', { class: 'cpl-tag', text: '内置' }) : null,
           isCloud() && !p.builtin ? h('span', { class: 'cpl-tag', text: '浏览器侧' }) : null,
         ]),
         h('div', { class: 'cpl-desc', text: p.description || '（无描述）' }),
@@ -184,8 +229,10 @@ export function pluginsTab({ onChanged } = {}) {
           class: 'cpl-btn ghost', type: 'button',
           onclick: () => { isOpen ? openDetail.delete(p.id) : openDetail.add(p.id); render(); },
         }, [h('span', { text: isOpen ? '收起' : '详情' })]),
-        p.builtin ? null : h('button', {
+        h('button', {
           class: 'cpl-btn danger', type: 'button',
+          disabled: Boolean(p.builtin),
+          title: p.builtin ? '核心插件，不可卸载' : '卸载插件',
           onclick: async () => {
             try { await removePlugin(p); } catch (e) { toast('删除失败：' + e.message); }
           },
@@ -310,23 +357,14 @@ export function pluginsTab({ onChanged } = {}) {
 
   function render() {
     const list = data.plugins || [];
-    const user = list.filter((p) => !p.builtin);
-    const builtin = list.filter((p) => p.builtin);
-    const sections = [
+    root.replaceChildren(
       headSection(),
       h('div', { class: 'set-section' }, [
-        h('div', { class: 'set-section-title', text: `已安装插件（${user.length}）` }),
-        user.length ? h('div', { class: 'cpl-list' }, user.map(pluginCard))
+        h('div', { class: 'set-section-title', text: `插件（${list.length}）` }),
+        list.length ? h('div', { class: 'cpl-list' }, list.map(pluginCard))
           : h('div', { class: 'help', text: '还没有安装插件。点上方「安装插件」上传 zip。' }),
       ]),
-    ];
-    if (builtin.length) {
-      sections.push(h('div', { class: 'set-section' }, [
-        h('div', { class: 'set-section-title', text: `内置（${builtin.length}）` }),
-        h('div', { class: 'cpl-list' }, builtin.map(pluginCard)),
-      ]));
-    }
-    root.replaceChildren(...sections);
+    );
   }
 
   async function load() {
@@ -334,7 +372,9 @@ export function pluginsTab({ onChanged } = {}) {
       const p = await api('/api/cpl/plugins');
       data = p;
       if (isCloud()) {
-        data.plugins = cloudPlugins.map((x) => ({ ...x }));
+        // 浏览器侧插件 + 服务端报告的只读内置条目（cdcp / cpl）
+        const serverBuiltin = (data.plugins || []).filter((x) => x && x.builtin);
+        data.plugins = [...cloudPlugins.map((x) => ({ ...x })), ...serverBuiltin];
         data.stats = {
           tools: 0,
           hooks: (data.plugins || []).reduce((n, x) => n + (x.counts?.hooks || 0), 0),

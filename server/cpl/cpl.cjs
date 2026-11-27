@@ -961,9 +961,25 @@ function createCpl(opts = {}) {
     get plugins() { return plugins; },
   };
 
+  /* 加载器自身也作为「内置插件」出现在插件列表里：
+   * 只读展示（不可禁用 / 不可卸载），命名空间 cpl 是保留的。 */
+  const SELF_SPEC = {
+    ns: 'cpl',
+    name: 'CPL 加载器',
+    uniqueVersion: 1,
+    version,
+    description: '扩展加载器本体：ID 体系（namespace@版本条件:方法名）、注册表与冲突仲裁、hook 分发、js / py 沙箱、插件生命周期。',
+    meta: { core: true },
+    module: () => {},
+  };
+
   // 启动时把已装插件读进内存（真正加载由 loadInstalled + reloadAll 决定）
   api.boot = async () => {
     loadInstalled();
+    if (!plugins.has(SELF_SPEC.ns)) {
+      try { registerBuiltinSync(SELF_SPEC); }
+      catch (e) { logLine('warn', SELF_SPEC.ns, ['加载器自身条目注册失败：' + e.message]); }
+    }
     return reloadAll();
   };
 

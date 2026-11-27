@@ -17,6 +17,7 @@ import {
   getToolDefinitions, callTool,
 } from './api.js';
 import { openSettings } from './settings.js';
+import { isCplRoute, mountCplStandalone } from './cpl-page.js';
 import { openScopeSettings } from './scope.js';
 import { appPrompt, appConfirm } from './dialog.js';
 import { normalizeConv, visibleMessages, chainTail, messageVersions, appendBranch, selectVersion, cutAfter } from './branches.js';
@@ -3273,6 +3274,14 @@ async function boot() {
   setLang(settings.lang);
   applyStatic();
   applyTheme();
+
+  // 独立页 /cpl：整页插件管理器，不初始化聊天界面、不参与会话路由
+  //（必须在 syncRoute 之前返回，否则地址栏会被改回 '/'）
+  if (isCplRoute()) {
+    mountCplStandalone();
+    return;
+  }
+
   const narrow = window.innerWidth <= 900;
   els.app.classList.toggle('sidebar-collapsed', narrow ? true : Boolean(ui.sidebarCollapsed));
   wire();

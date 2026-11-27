@@ -2783,6 +2783,7 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 .cpl-switch { width:34px; height:20px; border-radius:20px; border:none; background:var(--border-l2-thin); position:relative; cursor:pointer; padding:0; }
 .cpl-switch .knob { position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%; background:#fff; transition:left .15s; }
 .cpl-switch.on { background:var(--brand-primary); }
+.cpl-switch:disabled { opacity:.55; cursor:not-allowed; }
 .cpl-switch.on .knob { left:16px; }
 
 .cpl-meta { display:flex; gap:12px; flex-wrap:wrap; font-size:11.5px; color:var(--label-secondary); margin-top:9px; }
@@ -2800,3 +2801,39 @@ body[data-theme='dark'] .price-grid { background: var(--bg-layer-1); }
 .cpl-cfg-input { flex:1; height:28px; border:1px solid var(--border-l2-thin); border-radius:7px; padding:0 9px;
   background:var(--bg-base); color:var(--label-primary); font-size:12.5px; }
 .cpl-cfg .cpl-btn { align-self:flex-start; margin-top:4px; }
+
+/* ---------------- CPL 插件管理独立页（/cpl） ---------------- */
+body.cpl-standalone { overflow: hidden; }
+.cpl-sa { position: fixed; inset: 0; display: flex; flex-direction: column; background: var(--bg-base); }
+.cpl-sa-head {
+  flex: none; display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  height: 56px; padding: 0 20px; border-bottom: 1px solid var(--border-l1); background: var(--bg-base);
+}
+.cpl-sa-brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.cpl-sa-logo {
+  width: 30px; height: 30px; border-radius: 9px; flex: none;
+  display: flex; align-items: center; justify-content: center;
+  background: var(--bg-hover); color: var(--brand-text);
+}
+.cpl-sa-title { display: flex; flex-direction: column; line-height: 1.25; min-width: 0; }
+.cpl-sa-title b { font-size: 15px; font-weight: 600; }
+.cpl-sa-title span { font-size: 11.5px; color: var(--label-secondary); letter-spacing: .01em; }
+.cpl-sa-back {
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px;
+  border: 1px solid var(--border-l2-thin); border-radius: 8px; font-size: 13px;
+  color: var(--label-primary); background: transparent; text-decoration: none; flex: none;
+}
+.cpl-sa-back:hover { background: var(--bg-hover); text-decoration: none; }
+.cpl-sa-arrow { font-size: 14px; color: var(--label-secondary); }
+.cpl-sa-body { flex: 1; min-height: 0; overflow-y: auto; padding: 22px 20px 60px; }
+.cpl-sa-body .cpl-page { max-width: 880px; margin: 0 auto; }
+/* 设置里指向独立页的入口项 */
+.settings-nav-item.is-link .nav-go { margin-left: auto; font-size: 11px; color: var(--label-caption); }
+@media (max-width: 640px) {
+  .cpl-sa-head { padding: 0 12px; height: 52px; }
+  .cpl-sa-title span { display: none; }
+  .cpl-sa-body { padding: 16px 12px 48px; }
+}
+/* 独立页接管整屏：#app 有 display:flex，hidden 属性会被覆盖，必须显式关掉 */
+body.cpl-standalone #app { display: none !important; }
+body.cpl-standalone .cpl-sa { z-index: 10; }
