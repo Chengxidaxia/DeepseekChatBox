@@ -7,6 +7,14 @@
  */
 'use strict';
 
+/* 应用版本号：优先用宿主注入（便携版 SEA 由 sea-main 设置），
+ * 否则读仓库根的 package.json —— 避免插件列表里 cdcp 的版本号写死后与发行版不一致。 */
+function appVersion() {
+  const g = globalThis.__DS_CB_VERSION__;
+  if (g) return String(g);
+  try { return require('../package.json').version; } catch { return '0.0.0'; }
+}
+
 const crypto = require('node:crypto');
 const { spawn } = require('node:child_process');
 const dns = require('node:dns');
@@ -3633,7 +3641,7 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
         ns: 'cdcp',
         name: 'ChatBox 自身',
         uniqueVersion: 1,
-        version: '1.16.0',
+        version: appVersion(),
         description: 'ChatBox 主体运行时（命名空间 cdcp）：会话、消息、模型与内置工具都挂在这里；内置工具经它注册。',
         module: require('./cpl/builtin/tools.plugin.cjs'),
         context: { definitions, impl, call, store, log, dataDir },

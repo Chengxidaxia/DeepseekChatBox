@@ -23,6 +23,7 @@ const _createLan = typeof createLan !== 'undefined' ? createLan : require('../se
 
 const APP_ID = 'deepseek-chatbox';
 const VERSION = '1.16.1';
+globalThis.__DS_CB_VERSION__ = VERSION;   // 供内联的 tools-core / cpl 取用
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
 

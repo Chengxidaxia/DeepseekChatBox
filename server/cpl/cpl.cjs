@@ -28,7 +28,8 @@ const { createApiBridge } = require('./api.cjs');
 const { HOOK_MAP, API_MAP, HOOK_SPECS, API_SPECS, JSON_HOOKS, JSON_APIS } = require('./catalog.cjs');
 const { parseId, tryParseId, tryParseRef, matchVersion } = require('./ids.cjs');
 
-const CPL_VERSION = '1.16.0';
+const CPL_VERSION = globalThis.__DS_CB_VERSION__
+  || (() => { try { return require('../../package.json').version; } catch { return '0.0.0'; } })();
 const DEFAULT_HOOK_TIMEOUT = 5000;
 const DEFAULT_SCRIPT_TIMEOUT = 10000;
 const BREAKER_THRESHOLD = 5;
