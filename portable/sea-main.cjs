@@ -22,7 +22,12 @@ const _createCpl = typeof createCpl !== 'undefined' ? createCpl : require('../se
 const _createLan = typeof createLan !== 'undefined' ? createLan : require('../server/lan-core.cjs').createLan;
 
 const APP_ID = 'deepseek-chatbox';
-const VERSION = '1.16.1';
+/* 版本号由 portable/build.mjs 在打包时从 package.json 注入（替换下面的占位符），
+ * 源码里不写死；直接跑源码模式时退回读 package.json，两边都只有一个真源。 */
+let VERSION = '__PKG_VERSION__';
+if (!/^\d+\.\d+\.\d+/.test(VERSION)) {
+  try { VERSION = require('../package.json').version; } catch { VERSION = '0.0.0'; }
+}
 globalThis.__DS_CB_VERSION__ = VERSION;   // 供内联的 tools-core / cpl 取用
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';

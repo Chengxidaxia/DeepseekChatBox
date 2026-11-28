@@ -26,7 +26,7 @@ const { parsePackage } = require('./package.cjs');
 const { readZip, toFileMap } = require('./zip.cjs');
 const { createApiBridge } = require('./api.cjs');
 const { HOOK_MAP, API_MAP, HOOK_SPECS, API_SPECS, JSON_HOOKS, JSON_APIS } = require('./catalog.cjs');
-const { parseId, tryParseId, tryParseRef, matchVersion } = require('./ids.cjs');
+const { parseId, tryParseId, tryParseRef, matchVersion, RESERVED_NS } = require('./ids.cjs');
 
 const CPL_VERSION = globalThis.__DS_CB_VERSION__
   || (() => { try { return require('../../package.json').version; } catch { return '0.0.0'; } })();
@@ -269,8 +269,10 @@ function createCpl(opts = {}) {
   async function callTool(name, args, meta = {}) {
     const depth = Number(meta.depth) || 0;
     if (depth > 8) return { ok: false, text: '工具调用嵌套过深（>8 层），已中止' };
-    const entry = registry.getTool(name);
-    if (!entry) return { ok: false, text: `未知工具：${name}` };
+    // selfNs：插件内 `tools.call('foo')` 省略命名空间时先找自己；
+    // 带版本条件的 `ns@>=13520:foo` 也在这里解析（resolveTool 内部走 ids.cjs）
+    const { tool: entry, reason } = registry.resolveTool(name, { selfNs: meta.selfNs || meta.caller });
+    if (!entry) return { ok: false, text: reason || `未知工具：${name}` };
     const inner = { ...meta, depth: depth + 1 };
     const before = await emit('tool.before_call', { name, args: args || {}, tool: entry, caller: meta.caller }, inner);
     let useArgs = before.args ?? args;
@@ -450,6 +452,7 @@ function createCpl(opts = {}) {
               return res.error ? { ok: false, text: res.error } : (res.result || { ok: true, text: '' });
             },
             plugin: meta.ns,
+            uniqueVersion: meta.uniqueVersion,
           });
         }
       }
@@ -588,7 +591,14 @@ function createCpl(opts = {}) {
     rt.error = null;
     rt.loadedAt = Date.now();
     await emit('cpl.after_load', { plugin: meta });
-    logLine('info', meta.ns, [`已加载 v${meta.uniqueVersion}（${rt.methods.length} 方法 / ${rt.scripts.length} 脚本）`]);
+    /* 内置插件没有 json 方法/脚本，走原来那句会显示「0 方法 / 0 脚本」，看着像没加载成功。
+     * 对它们换成能说明真实状态的说法。 */
+    if (meta.builtin) {
+      const mine = registry.stats().byPlugin[meta.ns]?.tools || 0;
+      logLine('info', meta.ns, [mine
+        ? `内置插件已加载 v${meta.uniqueVersion}（${mine} 个工具在册）`
+        : `内置插件已加载 v${meta.uniqueVersion}（运行时，不提供工具）`]);
+    } else logLine('info', meta.ns, [`已加载 v${meta.uniqueVersion}（${rt.methods.length} 方法 / ${rt.scripts.length} 脚本）`]);
   }
 
   function unloadPlugin(rt) {
@@ -712,7 +722,17 @@ function createCpl(opts = {}) {
     };
   }
 
+  /** 核心插件（宿主 cdcp / 内置工具 cdcptools / 加载器 cpl）：只能看，不能删、不能停 */
+  function assertNotCore(ns, action) {
+    const rt = plugins.get(ns);
+    if (rt && (rt.meta.core || rt.meta.builtin)) {
+      throw new Error(`核心插件 ${ns} 不能${action}（${rt.meta.name || ns}）`);
+    }
+    if (!rt && RESERVED_NS.has(ns)) throw new Error(`核心插件 ${ns} 不能${action}`);
+  }
+
   function uninstall(ns) {
+    assertNotCore(ns, '卸载');
     const rt = plugins.get(ns);
     if (rt) { unloadPlugin(rt); plugins.delete(ns); }
     rrmdir(pluginDirOf(ns));
@@ -722,6 +742,7 @@ function createCpl(opts = {}) {
   }
 
   async function setEnabled(ns, on) {
+    assertNotCore(ns, on ? '启用' : '禁用');
     const rt = plugins.get(ns);
     if (!rt) throw new Error(`插件不存在：${ns}`);
     await emit(on ? 'cpl.before_enable' : 'cpl.before_disable', { plugin: rt.meta });
@@ -780,14 +801,19 @@ function createCpl(opts = {}) {
       ns, name: spec.name || ns, uniqueVersion: String(spec.uniqueVersion || '1'),
       version: spec.version || '', description: spec.description || '',
       author: 'builtin', builtin: true,
-      permissions: ['tools', 'hooks', 'kv', 'config', 'ui', 'log', 'events', 'net', 'ai', 'store', 'fs'],
+      /* 权限必须是「这个插件真实调用到的 CPL 能力」，由 spec 自己声明；
+       * 以前这里统一写死全部 11 项，导致 cdcp 这种空壳运行时也显示全套权限（虚标）。 */
+      permissions: Array.isArray(spec.permissions) ? spec.permissions.slice() : [],
       requires: [], loadAfter: [], loadBefore: [], conflicts: [], keywords: [],
       ...(spec.meta || {}),
     };
     const rt = {
       meta, methods: [], scripts: [], assets: new Map(), icon: null, fileMap: new Map(),
+      /* 内置插件没有 zip，图标由 spec.icon 指向 public/assets 下的文件；
+       * 不在这里硬编码 ns→文件名映射，新增内置插件只要在 spec 里写 icon。 */
+      iconUrl: spec.icon ? '/assets/' + String(spec.icon).replace(/^\/+/, '') : null,
       dir: path.join(builtinDir, ns), enabled: true, status: 'enabled', error: null,
-      loadedAt: Date.now(), stats: { methods: 0, scripts: 1, assets: 0, hooks: 0, langs: ['js'], builtin: true },
+      loadedAt: Date.now(), stats: { methods: 0, scripts: 0, assets: 0, hooks: 0, langs: ['js'], builtin: true },
       api: null, builtin: spec.module, context: spec.context,
     };
     ensureDir(rt.dir);
@@ -810,6 +836,9 @@ function createCpl(opts = {}) {
       rt.status = 'error';
       rt.error = e.message;
       logLine('error', rt.meta.ns, ['内置插件注册失败：' + e.message]);
+    }
+    if (rt.status === 'enabled') {
+      logLine('info', rt.meta.ns, [`内置插件已注册（${rt.meta.permissions.length ? '权限：' + rt.meta.permissions.join(' / ') : '不调用扩展接口'}）`]);
     }
     return rt;
   }
@@ -897,6 +926,9 @@ function createCpl(opts = {}) {
       error: rt.error,
       loadedAt: rt.loadedAt,
       stats: rt.stats,
+      /* 统一交出可直接用的图标地址：内置插件走 assets，第三方走 /api/cpl/icon/<ns>；
+       * 前端不再自己判断 id 或维护映射表。 */
+      iconUrl: rt.iconUrl || (rt.icon ? '/api/cpl/icon/' + encodeURIComponent(rt.meta.ns) : null),
       counts: registry.stats().byPlugin[rt.meta.ns] || { tools: 0, hooks: 0, apis: 0, ui: 0 },
     };
   }
@@ -970,6 +1002,9 @@ function createCpl(opts = {}) {
     uniqueVersion: 1,
     version,
     description: '扩展加载器本体：ID 体系（namespace@版本条件:方法名）、注册表与冲突仲裁、hook 分发、js / py 沙箱、插件生命周期。',
+    /* 加载器就是这 11 项能力的实现方，对它来说全量声明是真实的 */
+    permissions: ['tools', 'hooks', 'kv', 'config', 'ui', 'log', 'events', 'net', 'ai', 'store', 'fs'],
+    icon: 'plugin-cpl.png',
     meta: { core: true },
     module: () => {},
   };

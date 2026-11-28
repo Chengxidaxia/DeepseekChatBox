@@ -16,7 +16,7 @@ import {
   synthesize, transcribe, buildPayload, streamChat, buildReminder, measureRequest,
   getToolDefinitions, callTool,
 } from './api.js';
-import { openSettings } from './settings.js';
+import { openSettings, isSettingsRoute, mountSettingsStandalone } from './settings.js';
 import { isCplRoute, mountCplStandalone } from './cpl-page.js';
 import { openScopeSettings } from './scope.js';
 import { appPrompt, appConfirm } from './dialog.js';
@@ -3143,7 +3143,12 @@ function wire() {
     renderSidebar();
   }, 120));
 
-  $('#btnSettings').addEventListener('click', () => openSettings({ onChange: onSettingsChange }));
+  // 设置是独立页面 /settings：直接跳整页。
+  // 生成中不跳（整页加载会断开 SSE，正在输出的回答就没了），退回弹窗。
+  $('#btnSettings').addEventListener('click', () => {
+    if (state.streaming) return openSettings({ onChange: onSettingsChange });
+    location.href = '/settings/general';
+  });
   $('#btnNewGroup').addEventListener('click', async () => {
     const name = await appPrompt({ title: '新建分组', value: '新分组', placeholder: '分组名称', okText: '创建' });
     if (name === null || !name.trim()) return;
@@ -3279,6 +3284,12 @@ async function boot() {
   //（必须在 syncRoute 之前返回，否则地址栏会被改回 '/'）
   if (isCplRoute()) {
     mountCplStandalone();
+    return;
+  }
+
+  // 独立页 /settings：整页设置，同样不初始化聊天界面（和 /cpl 一个套路）
+  if (isSettingsRoute()) {
+    mountSettingsStandalone();
     return;
   }
 

@@ -3637,19 +3637,34 @@ function createTools({ store, upstream = 'https://api.deepseek.com', log = conso
    * 没传 cpl 时保持旧行为，便于单独测试本文件。 */
   if (cpl) {
     try {
+      // 宿主：ChatBox 自身（不注册工具，只作为运行时/上下文出口）
       cpl.registerBuiltinSync({
         ns: 'cdcp',
         name: 'ChatBox 自身',
         uniqueVersion: 1,
         version: appVersion(),
-        description: 'ChatBox 主体运行时（命名空间 cdcp）：会话、消息、模型与内置工具都挂在这里；内置工具经它注册。',
+        description: 'ChatBox 主体运行时（命名空间 cdcp）：会话、消息、模型与上下文都在这里；内置工具由 cdcptools 提供。',
+        permissions: [],            // 宿主本身不调用 CPL 接口，工具能力都在 cdcptools
+        icon: 'plugin-cdcp.png',
+        module: () => {},
+        context: { definitions, impl, call, store, log, dataDir },
+      });
+      // 内置工具集：工具注册在 cdcptools，模型侧保持裸名（current_time 等不变）
+      cpl.registerBuiltinSync({
+        ns: 'cdcptools',
+        name: '内置工具集',
+        uniqueVersion: 1,
+        version: appVersion(),
+        description: 'ChatBox 内置工具（' + definitions.length + ' 个）：联网检索、网页抓取、编解码、哈希、二维码、统计、命令执行等本地能力。',
+        permissions: ['tools', 'log'],   // 只用到 tools.register 和 log
+        icon: 'plugin-cdcptools.png',    // 与 id 同名，旧前端按约定路径兜底时也能命中
         module: require('./cpl/builtin/tools.plugin.cjs'),
         context: { definitions, impl, call, store, log, dataDir },
       });
       return {
         definitions: cpl.registry.toolDefinitions(),
         names: cpl.registry.toolNames(),
-        call: (name, args, callCtx) => cpl.callTool(name, args, { caller: 'cdcp', ...(callCtx || {}) }),
+        call: (name, args, callCtx) => cpl.callTool(name, args, { caller: 'cdcptools', ...(callCtx || {}) }),
         callDirect: call,
       };
     } catch (e) {

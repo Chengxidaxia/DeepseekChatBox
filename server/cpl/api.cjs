@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { tryParseId } = require('./ids.cjs');
+const { TOOL_NAME_SEP } = require('./registry.cjs');
 const { HOOK_SPECS, API_SPECS } = require('./catalog.cjs');
 
 const HOOK_INDEX = HOOK_SPECS.map(([id, desc]) => ({ id, desc }));
@@ -68,6 +69,25 @@ function createApiBridge({ cpl, plugin }) {
   const hostConvs = () => cpl.host.getConversations?.() || [];
 
   const findConv = (id) => (id ? hostConvs().find((c) => c.id === id) : hostConv());
+
+  /* 插件里引用工具名时可以省掉自己的命名空间：
+   *   'foo'        → 先找自己插件注册的 foo，没有则当内置裸名（cdcp）
+   *   'ns__foo' / 'ns:foo' / 'ns@1:foo' → 原样交给 registry 解析 */
+  /* 插件内调工具的写法解析（口径：一律冒号）：
+   *   foo              → 先找自己 demo:foo，再找内置裸名 foo，都不找别的插件
+   *   demo:foo / demo@>=1:foo → 完整 ID，原样交出去
+   *   demo__foo        → 模型侧写法（function.name 只能用 __），兼容
+   */
+  const toolKey = (name) => {
+    const raw = String(name || '');
+    if (!raw) return raw;
+    if (raw.includes(':') || raw.includes('@')) return raw;
+    const own = `${ns}:${raw}`;
+    if (cpl.registry.getTool(own)) return own;
+    const legacy = `${ns}${TOOL_NAME_SEP}${raw}`;   // 模型回传的 function.name
+    if (cpl.registry.getTool(legacy)) return legacy;
+    return raw;
+  };
 
   const bridge = {
     /* ------------------------------ messages ------------------------------ */
@@ -153,6 +173,15 @@ function createApiBridge({ cpl, plugin }) {
       register(tool) {
         need('tools');
         if (!tool || !tool.name) throw new Error('tools.register 需要 name');
+        // 模型侧 function name 只允许 [A-Za-z0-9_-]，且总长 ≤64（含 `ns__` 前缀，见 TOOL_NAME_SEP）。
+        // 不校验的话会注册成功、等到对话请求时才被上游 400，整条对话直接失败。
+        const tname = String(tool.name);
+        if (!/^[A-Za-z0-9_-]{1,48}$/.test(tname)) {
+          throw new Error(`工具名不合法：${tname}（只允许字母、数字、下划线、连字符，长度 1-48）`);
+        }
+        if (`${ns}${TOOL_NAME_SEP}${tname}`.length > 64) {
+          throw new Error(`工具名过长：${ns}:${tname}（含命名空间前缀不能超过 64 字符）`);
+        }
         const r = cpl.registry.registerTool({
           ns, id: tool.name,
           def: {
@@ -167,14 +196,22 @@ function createApiBridge({ cpl, plugin }) {
           plugin: ns,
           order: tool.order,
           builtin: Boolean(plugin.meta.builtin),
+          uniqueVersion: plugin.meta.uniqueVersion,
         });
         if (!r.ok) throw new Error(r.reason);
         return r.fullId;
       },
-      unregister(name) { return cpl.registry.unregisterTool(ns, name); },
+      unregister(name) {
+        const raw = String(name || '');
+        // 两种前缀都认：内部写法 ns:id，以及模型侧回传的 ns__id
+        const bare = raw.startsWith(`${ns}:`) ? raw.slice(ns.length + 1)
+          : raw.startsWith(`${ns}${TOOL_NAME_SEP}`) ? raw.slice(ns.length + TOOL_NAME_SEP.length)
+          : raw;
+        return cpl.registry.unregisterTool(ns, bare);
+      },
       list() { return cpl.registry.toolDefinitions(); },
-      get(name) { const t = cpl.registry.getTool(name); return t ? t.def : null; },
-      async call(name, args) { return cpl.callTool(name, args, { caller: ns }); },
+      get(name) { const t = cpl.registry.getTool(toolKey(name)); return t ? t.def : null; },
+      async call(name, args) { return cpl.callTool(toolKey(name), args, { caller: ns, selfNs: ns }); },
       names() { return cpl.registry.toolNames(); },
     },
 

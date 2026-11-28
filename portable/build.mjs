@@ -118,7 +118,15 @@ bundle = bundle.replace('/*__TOKENIZER__*/', () =>
   'const { tokenize: _dsTokenize, setTokenizerJson } = (function () {\n' + tokenizerSrc + '\n})();\n'
   + 'setTokenizerJson(' + tokenizerJson + ');\n'
   + 'globalThis.__dsTokenize = _dsTokenize;');
+// 版本号注入：SEA 里没有磁盘上的 package.json，版本只能打包时内联进来。
+// 源码里的占位符 __PKG_VERSION__ 在这里换成 package.json 的真实版本，避免两处写死。
+// 注意不能把占位符写成 __DS_CB_VERSION__：那是 globalThis 上的运行时变量名，会被一起替换掉。
+const pkgVersion = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')).version;
+if (!pkgVersion) throw new Error('package.json 没有 version 字段');
+if (!bundle.includes('__PKG_VERSION__')) throw new Error('sea-main.cjs 缺少版本占位符 __PKG_VERSION__');
+bundle = bundle.replace(/__PKG_VERSION__/g, () => pkgVersion);
 fs.writeFileSync(bundlePath, bundle);
+console.log(`version: ${pkgVersion} (injected from package.json)`);
 console.log(`bundle: ${(fs.statSync(bundlePath).size / 1024).toFixed(0)} KB (store-core + cpl + tools-core + lan-core + tokenizer + 6.4MB 词表已内联)`);
 
 // 3) sea-config

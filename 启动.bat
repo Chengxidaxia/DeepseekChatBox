@@ -30,8 +30,8 @@ echo.
 echo (Local only? right-click edit, add  --local-only  after server.mjs)
 echo.
 
-start "" http://127.0.0.1:17321
-"%NODE_EXE%" server.mjs %*
+rem browser is opened by server.mjs AFTER the port is listening (--open), so no blank page
+"%NODE_EXE%" server.mjs --open %*
 
 echo.
 echo Server stopped.

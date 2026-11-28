@@ -9,6 +9,19 @@ import { listModels, cachedModels } from './api.js';
 
 let overlay = null;
 
+/* 设置的分标签页各自对应一个地址（/settings/<tab>，云端 #/settings/<tab>），
+ * 这样「通用 / 模型 / 生成 / 数据 / 关于」都能直接收藏或分享，不是同一个页面。 */
+const TAB_IDS = new Set(['general', 'model', 'gen', 'data', 'about']);
+const TAB_LABEL = {
+  general: 'tabGeneral', model: 'tabModel', gen: 'tabGen', data: 'tabData', about: 'tabAbout',
+};
+
+function tabUrlFor(id) {
+  // 路径式（本地服务端有兜底路由）优先；静态托管下退回 hash
+  if (/^\/settings(\/|$)/.test(location.pathname)) return '/settings/' + id;
+  return location.pathname + location.search + '#/settings/' + id;
+}
+
 function field(label, control, help) {
   return h('div', { class: 'field' }, [
     h('label', { text: label }),
@@ -95,24 +108,58 @@ function aboutTab() {
   ];
 }
 
-export function openSettings({ onChange } = {}) {
-  if (overlay) return;
-  let tab = 'general';
+/**
+ * 设置。
+ *   standalone=false：弹窗（引导、错误提示里的「打开设置」用这个）
+ *   standalone=true ：独立整页 /settings（侧栏齿轮、设置入口走这个）
+ */
+export function openSettings({ onChange, standalone = false, back = '/', tab: initialTab = null } = {}) {
+  if (!standalone && overlay) return;
+  let tab = TAB_IDS.has(initialTab) ? initialTab : 'general';
 
   const body = h('div', { class: 'settings-content' });
   const tabs = h('div', { class: 'settings-nav' });
   const modal = h('div', { class: 'modal settings-dialog' });
   const dialogMain = h('div', { class: 'settings-main' }, [tabs, body]);
-  const head = h('div', { class: 'modal-head' }, [
-    h('span', { text: t('settings') }),
-    h('button', { class: 'icon-btn sm', type: 'button', onclick: () => close() }, [icon('i-x')]),
-  ]);
 
-  // 设置页不跟「点背景关闭」：里面有正在编辑的表单，误触会白填。只能按 ✕ 或 Esc 退出。
-  overlay = h('div', { class: 'overlay settings-overlay' }, [modal]);
-  modal.append(head, dialogMain);
+  const head = standalone
+    ? h('header', { class: 'settings-page-head' }, [
+        h('a', {
+          class: 'settings-page-back',
+          href: back,
+          title: '返回对话',
+          'aria-label': '返回对话',
+          onclick: (e) => { e.preventDefault(); close(); },
+        }, [
+          h('span', { class: 'settings-page-arrow', text: '←' }),
+          h('span', { class: 'settings-page-backtext', text: '返回对话' }),
+        ]),
+        h('div', { class: 'settings-page-brand' }, [
+          h('span', { class: 'settings-page-logo' }, [icon('i-settings')]),
+          h('b', { text: t('settings') }),
+        ]),
+      ])
+    : h('div', { class: 'modal-head' }, [
+        h('span', { text: t('settings') }),
+        h('button', { class: 'icon-btn sm', type: 'button', onclick: () => close() }, [icon('i-x')]),
+      ]);
+
+  let pageEl = null;
+  if (standalone) {
+    document.title = t('settings') + ' · Deepseek ChatBox';
+    document.body.classList.add('settings-standalone');
+    const appEl = document.getElementById('app');
+    if (appEl) appEl.hidden = true;
+    pageEl = h('div', { class: 'settings-page' }, [head, dialogMain]);
+    document.body.append(pageEl);
+  } else {
+    // 设置页不跟「点背景关闭」：里面有正在编辑的表单，误触会白填。只能按 ✕ 或 Esc 退出。
+    overlay = h('div', { class: 'overlay settings-overlay' }, [modal]);
+    modal.append(head, dialogMain);
+  }
 
   function close() {
+    if (standalone) { location.href = back; return; }
     overlay?.remove();
     overlay = null;
     document.removeEventListener('keydown', onKey);
@@ -120,7 +167,7 @@ export function openSettings({ onChange } = {}) {
   function onKey(e) {
     if (e.key === 'Escape') close();
   }
-  document.addEventListener('keydown', onKey);
+  if (!standalone) document.addEventListener('keydown', onKey);
 
   function tabBtn(id, label, iconId, onPick) {
     const b = h('button', { type: 'button', class: 'settings-nav-item' + (id === tab ? ' on' : '') + (onPick ? ' is-link' : '') }, [
@@ -155,6 +202,17 @@ export function openSettings({ onChange } = {}) {
     if (tab === 'gen') body.append(...genTab());
     if (tab === 'data') body.append(...dataTab());
     if (tab === 'about') body.append(...aboutTab());
+    syncTabUrl(tab);
+  }
+
+  /** 每个分标签页都有自己的地址（/settings/<tab>，云端走 #/settings/<tab>）。
+   * 用 replaceState 而不是赋值 location.hash，避免云端 hash 变化触发整页重新挂载。 */
+  function syncTabUrl(id) {
+    if (!standalone) return;
+    const url = tabUrlFor(id);
+    try { if (url !== location.pathname + location.search + location.hash) history.replaceState(history.state, '', url); } catch { /* file:// 等环境忽略 */ }
+    const label = t(TAB_LABEL[id] || 'settings');
+    document.title = label + ' · Deepseek ChatBox';
   }
 
   function generalTab() {
@@ -768,7 +826,35 @@ export function openSettings({ onChange } = {}) {
 
   // 官方 chat-demo 的设置弹窗只有右上角关闭按钮，没有底部操作栏
   render();
-  document.body.append(overlay);
+  if (!standalone && overlay && !overlay.isConnected) document.body.append(overlay);
+}
+
+/** 是否为独立的设置页路由：/settings、/settings/<tab>（云端静态托管用 #/settings...） */
+export function isSettingsRoute(pathname = location.pathname, hash = location.hash) {
+  return /^\/settings(\/[a-z]+)?\/?$/.test(pathname) || /^#\/?settings(\/[a-z]+)?\/?$/.test(hash || '');
+}
+
+/** 从地址里取分标签 id；不认识的一律回 general */
+export function settingsTabFromRoute(pathname = location.pathname, hash = location.hash) {
+  const m = String(pathname).match(/^\/settings\/([a-z]+)\/?$/)
+    || String(hash || '').match(/^#\/?settings\/([a-z]+)\/?$/);
+  const id = m && m[1];
+  return TAB_IDS.has(id) ? id : 'general';
+}
+
+/** 独立页的返回地址：路径式路由回根，hash 式路由去掉 hash */
+export function settingsBackHref() {
+  if (/^\/settings(\/|$)/.test(location.pathname)) return '/';
+  return location.pathname + location.search;
+}
+
+/** 独立页 /settings：整页设置，不初始化聊天界面 */
+export function mountSettingsStandalone(back = settingsBackHref()) {
+  // /settings/plugins 没有这一页：插件管理器本身就是 /cpl
+  const m = String(location.pathname).match(/^\/settings\/([a-z]+)\/?$/)
+    || String(location.hash || '').match(/^#\/?settings\/([a-z]+)\/?$/);
+  if (m && m[1] === 'plugins') { location.replace('/cpl'); return; }
+  openSettings({ standalone: true, back, tab: settingsTabFromRoute() });
 }
 
 function icon(id) {

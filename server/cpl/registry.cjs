@@ -8,7 +8,7 @@
  *   3. 仲裁：chatbox 内置 vs 插件 → 插件优先；插件之间 → 后加载者胜并告警
  */
 
-const { parseId, tryParseId, matchVersion, sameTarget } = require('./ids.cjs');
+const { parseId, tryParseId, matchVersion, sameTarget, isBareNs } = require('./ids.cjs');
 
 const KIND = {
   TOOL: 'tool',
@@ -16,6 +16,30 @@ const KIND = {
   API: 'api',
   UI: 'ui',
 };
+
+/* 命名空间与方法之间的分隔符。
+ *
+ * 口径（2026-11-28 定）：**除了下面这一处，其余一律用冒号** ——
+ * 内部 ID、插件页、日志、文档、插件内调用写法全是 `ns:id`。
+ * 只有发给模型的 `function.name` 必须换成双下划线：OpenAI / DeepSeek 的
+ * function name 只接受 `[A-Za-z0-9_-]`，带冒号会让整个请求 400
+ * （不是被忽略，是整条对话直接失败，之前已经踩过一次）。
+ * 两个插件各注册一个 `foo` 时若都用裸名，模型侧会重名，后注册的永远调不到，
+ * 所以插件工具在模型侧才需要这个前缀；命名空间安装时唯一，前缀天然不撞。 */
+const TOOL_NAME_SEP = '__';
+
+/** 模型侧的 function.name：内置保持裸名，插件加 `ns__` 前缀（唯一必须转义处） */
+function toolDisplayName(ns, id) {
+  return isBareNs(ns) ? id : `${ns}${TOOL_NAME_SEP}${id}`;
+}
+
+/** 给人和日志看的名字：模型侧的 `ns__id` 还原成 `ns:id` */
+function prettyToolName(displayOrId, ns) {
+  const s = String(displayOrId || '');
+  if (ns && s.startsWith(`${ns}${TOOL_NAME_SEP}`)) return `${ns}:${s.slice(ns.length + TOOL_NAME_SEP.length)}`;
+  const i = s.indexOf(TOOL_NAME_SEP);
+  return i === -1 ? s : `${s.slice(0, i)}:${s.slice(i + TOOL_NAME_SEP.length)}`;
+}
 
 class Registry {
   constructor({ log = console.log } = {}) {
@@ -39,11 +63,18 @@ class Registry {
    * @param {{ns:string, id:string, def:object, handler:Function, plugin:string, builtin?:boolean, order?:number}} e
    */
   registerTool(e) {
-    const fullId = e.ns === 'cdcp' ? e.id : `${e.ns}:${e.id}`;
+    const fullId = isBareNs(e.ns) ? e.id : `${e.ns}:${e.id}`;
+    const display = toolDisplayName(e.ns, e.id);
+    // def 里的 function.name 才是模型看到的名字，必须跟着改（不能只改内部 key）
+    const def = e.def && e.def.function
+      ? { ...e.def, function: { ...e.def.function, name: display } }
+      : e.def;
     const next = {
-      fullId, ns: e.ns, id: e.id,
-      def: e.def, handler: e.handler,
+      fullId, display, ns: e.ns, id: e.id,
+      def, handler: e.handler,
       plugin: e.plugin, builtin: Boolean(e.builtin),
+      // 插件唯一版本号：`ns@>=13520:foo` 这类引用要靠它判条件
+      uniqueVersion: e.uniqueVersion === undefined || e.uniqueVersion === null ? null : String(e.uniqueVersion),
       order: Number(e.order) || 0, seq: this.nextSeq(),
     };
     const prev = this.tools.get(fullId);
@@ -68,7 +99,7 @@ class Registry {
   }
 
   unregisterTool(ns, id) {
-    const fullId = ns === 'cdcp' ? id : `${ns}:${id}`;
+    const fullId = isBareNs(ns) ? id : `${ns}:${id}`;
     const gone = this.tools.delete(fullId);
     if (gone) this._dirty = true;
     return gone;
@@ -95,13 +126,47 @@ class Registry {
   }
 
   toolNames() {
-    return [...this.tools.values()].sort((a, b) => (a.order - b.order) || (a.seq - b.seq)).map((t) => t.id);
+    return [...this.tools.values()].sort((a, b) => (a.order - b.order) || (a.seq - b.seq)).map((t) => t.display || t.id);
   }
 
-  getTool(fullIdOrName) {
-    if (this.tools.has(fullIdOrName)) return this.tools.get(fullIdOrName);
-    for (const t of this.tools.values()) if (t.id === fullIdOrName) return t;
-    return null;
+  /**
+   * 解析工具引用，返回 { tool, reason }。
+   * 支持的写法（按优先级）：
+   *   ns:id            完整 ID
+   *   ns@>=13520:id    完整 ID + 版本条件（也支持 > = < <= 与区间 [a,b] (a,b] 等）
+   *   ns__id           模型侧 function.name（唯一必须转义的地方，兼容）
+   *   id               裸名：只命中内置（cdcptools / cdcp），绝不落到别的插件
+   * @param {string} ref
+   * @param {{selfNs?:string}} opt selfNs 用于 `foo` 省略命名空间时的「先自己」
+   */
+  resolveTool(ref, opt = {}) {
+    const k = String(ref || '');
+    if (!k) return { tool: null, reason: '工具引用为空' };
+    // 插件内裸名：先自己（优先级「自己 > 内置」）。
+    // 必须排在最前面 —— 内置工具的 fullId 本身就是裸名，`tools.has(k)` 会先命中内置。
+    if (opt.selfNs && !k.includes(':') && !k.includes('@')) {
+      const own = this.tools.get(`${opt.selfNs}:${k}`);
+      if (own) return { tool: own };
+    }
+    if (this.tools.has(k)) return { tool: this.tools.get(k) };
+    for (const t of this.tools.values()) if ((t.display || t.id) === k) return { tool: t };
+    // 再回退到内置；裸名永远不落到别的插件上
+    for (const t of this.tools.values()) if (t.id === k && isBareNs(t.ns)) return { tool: t };
+
+    // 走到这里说明带 `@` 版本条件（或命名空间写法但内部 key 不含版本）
+    const p = tryParseId(k, { selfNs: opt.selfNs, defaultNs: opt.selfNs });
+    if (!p) return { tool: null, reason: `无法解析的工具引用：${k}` };
+    const cands = [...this.tools.values()].filter((t) => t.ns === p.ns && t.id === p.id);
+    if (!cands.length) return { tool: null, reason: `未知工具：${k}` };
+    if (!p.range) return { tool: cands[0] };
+    const hit = cands.find((t) => matchVersion(p, t.uniqueVersion));
+    if (hit) return { tool: hit };
+    const have = [...new Set(cands.map((t) => t.uniqueVersion ?? '未标注'))].join(' / ');
+    return { tool: null, reason: `版本条件不满足：${k}（当前 uniqueVersion ${have}）` };
+  }
+
+  getTool(ref, opt) {
+    return this.resolveTool(ref, opt).tool;
   }
 
   /* -------------------------------- hook -------------------------------- */
@@ -186,7 +251,7 @@ class Registry {
   /* -------------------------------- API -------------------------------- */
 
   registerApi(e) {
-    const fullId = e.ns === 'cdcp' ? e.id : `${e.ns}:${e.id}`;
+    const fullId = isBareNs(e.ns) ? e.id : `${e.ns}:${e.id}`;
     const prev = this.apis.get(fullId);
     if (prev && !prev.builtin && !e.builtin) {
       this.conflicts.push({ kind: KIND.API, fullId, winner: e.plugin, loser: prev.plugin });
@@ -194,20 +259,22 @@ class Registry {
     this.apis.set(fullId, {
       fullId, ns: e.ns, id: e.id, fn: e.fn,
       plugin: e.plugin, builtin: Boolean(e.builtin),
+      uniqueVersion: e.uniqueVersion === undefined || e.uniqueVersion === null ? null : String(e.uniqueVersion),
       description: e.description || '', seq: this.nextSeq(),
     });
     return { ok: true, fullId };
   }
 
   getApi(ref, selfNs) {
-    const p = tryParseId(ref, { selfNs });
+    const raw = String(ref || '');
+    if (!raw) return null;
+    if (this.apis.has(raw)) return this.apis.get(raw);
+    const p = tryParseId(raw, { selfNs });
     if (!p) return null;
-    if (this.apis.has(p.fullId)) return this.apis.get(p.fullId);
-    // 版本条件匹配
-    for (const a of this.apis.values()) {
-      if (a.ns === p.ns && a.id === p.id) return a;
-    }
-    return null;
+    const cands = [...this.apis.values()].filter((a) => a.ns === p.ns && a.id === p.id);
+    if (!cands.length) return null;
+    if (!p.range) return cands[0];
+    return cands.find((a) => matchVersion(p, a.uniqueVersion)) || null;
   }
 
   /* --------------------------------- UI --------------------------------- */
@@ -263,4 +330,4 @@ class Registry {
   }
 }
 
-module.exports = { Registry, KIND };
+module.exports = { Registry, KIND, TOOL_NAME_SEP, toolDisplayName, prettyToolName };

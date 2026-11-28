@@ -1,11 +1,13 @@
 // DeepSeek Chatbox — 本地服务：静态文件 + 服务端存储 + DeepSeek API 反向代理（SSE 透传）
 // 数据全部落在本目录 ./data 下，浏览器不保存任何内容。
 import http from 'node:http';
+import https from 'node:https';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import os from 'node:os';
+import { execFileSync, spawn } from 'node:child_process';
 
 const require = createRequire(import.meta.url);
 const { createStore } = require('./server/store-core.cjs');
@@ -27,6 +29,15 @@ const LOCAL_ONLY = process.argv.includes('--local-only') || process.argv.include
 const HOST = process.env.HOST || argVal('--host') || (LOCAL_ONLY ? '127.0.0.1' : '0.0.0.0');
 const LAN_OPEN = HOST !== '127.0.0.1' && HOST !== 'localhost';
 const NO_AUTH = process.argv.includes('--no-auth');
+/* HTTPS 开关：--https（或 HTTPS=1）。局域网/RadminLAN 上跑的话强烈建议开，
+ * 否则口令和 API Key 都是明文过网线。 */
+const USE_HTTPS = process.argv.includes('--https') || process.env.HTTPS === '1';
+/* 自动打开浏览器：--open 打开，--no-open 关闭（默认关闭，避免开发时每次启动都弹窗）。
+ * 关键点：只有 listen 成功（端口真的在应答）之后才会打开，所以不会出现
+ * 「网页先打开、服务端还没起来」的空白页/连接被拒。 */
+const OPEN_ON_START = process.argv.includes('--open') && !process.argv.includes('--no-open');
+const TLS_CERT = argVal('--cert');
+const TLS_KEY = argVal('--key');
 const DATA_DIR = path.resolve(argVal('--data-dir') || process.env.DATA_DIR || path.join(__dirname, 'data'));
 const UPSTREAM = 'https://api.deepseek.com';
 const ENV_KEY = process.env.DEEPSEEK_API_KEY || '';
@@ -78,6 +89,29 @@ function lanAddresses(limit = 2) {
   const rank = (a) => (a.startsWith('192.168.') ? 0 : a.startsWith('10.') ? 1
     : /^172\.(1[6-9]|2\d|3[01])\./.test(a) ? 2 : 3);
   return out.sort((x, y) => rank(x) - rank(y)).slice(0, limit);
+}
+
+/* 用系统默认浏览器打开 URL。detached + unref：浏览器独立存活，关掉本窗口也不会带走它。 */
+function openBrowser(url) {
+  try {
+    let cmd, args;
+    if (process.platform === 'win32') {
+      // start 的第一个引号参数是「窗口标题」，必须留空，否则 URL 会被当成标题而不打开
+      cmd = 'cmd';
+      args = ['/c', 'start', '', url];
+    } else if (process.platform === 'darwin') {
+      cmd = 'open'; args = [url];
+    } else {
+      cmd = 'xdg-open'; args = [url];
+    }
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore', windowsHide: true });
+    child.on('error', () => {});
+    child.unref();
+    return true;
+  } catch (e) {
+    log('[提示] 自动打开浏览器失败：' + e.message);
+    return false;
+  }
 }
 
 /* ------------------------------ CPL 扩展加载器 ------------------------------ */
@@ -209,13 +243,58 @@ async function readJson(req) {
   return JSON.parse(buf.toString('utf8'));
 }
 
+/* -------------------------------- TLS -------------------------------- */
+/* 证书来源优先级：
+ *   1. --cert/--key 指定的 PEM（自己用 mkcert / openssl 签的都行）
+ *   2. data/tls/cert.pem + key.pem（手动放进去的）
+ *   3. Windows 上自动生成自签 PFX（CurrentUser，5 年，含 localhost 与本机 IPv4）
+ * 自签证书浏览器会提示不安全，点「继续访问」即可；局域网内部用足够。
+ */
+function ensureTls() {
+  if (TLS_CERT && TLS_KEY) {
+    return { cert: fs.readFileSync(TLS_CERT), key: fs.readFileSync(TLS_KEY) };
+  }
+  const dir = path.join(DATA_DIR, 'tls');
+  const pemCert = path.join(dir, 'cert.pem');
+  const pemKey = path.join(dir, 'key.pem');
+  if (fs.existsSync(pemCert) && fs.existsSync(pemKey)) {
+    return { cert: fs.readFileSync(pemCert), key: fs.readFileSync(pemKey) };
+  }
+  const pfx = path.join(dir, 'cert.pfx');
+  const PASS = 'chatbox-tls';
+  if (fs.existsSync(pfx)) return { pfx: fs.readFileSync(pfx), passphrase: PASS };
+
+  if (process.platform !== 'win32') {
+    throw new Error('自动生成证书只支持 Windows；请用 --cert/--key 指定 PEM，或把 cert.pem/key.pem 放进 data/tls/');
+  }
+  fs.mkdirSync(dir, { recursive: true });
+  const names = ['localhost', '127.0.0.1', ...lanAddresses()];
+  const ps = [
+    "$ErrorActionPreference='Stop'",
+    `$dns=@(${names.map((x) => `'${x}'`).join(',')})`,
+    "$c=New-SelfSignedCertificate -DnsName $dns -CertStoreLocation Cert:\\\\CurrentUser\\\\My -NotAfter (Get-Date).AddYears(5) -FriendlyName 'DeepSeek ChatBox' -KeyAlgorithm RSA -KeyLength 2048",
+    `$p=ConvertTo-SecureString -String '${PASS}' -Force -AsPlainText`,
+    `Export-PfxCertificate -Cert $c -FilePath '${pfx}' -Password $p | Out-Null`,
+    "$s=New-Object System.Security.Cryptography.X509Certificates.X509Store('My','CurrentUser');$s.Open('ReadWrite');$s.Remove($c);$s.Close()",
+  ].join('; ');
+  execFileSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { stdio: 'pipe', timeout: 40000 });
+  if (!fs.existsSync(pfx)) throw new Error('证书生成失败（data/tls/cert.pfx 不存在）');
+  return { pfx: fs.readFileSync(pfx), passphrase: PASS };
+}
+
 /* ------------------------------- 静态文件 ------------------------------- */
 function serveStatic(req, res, pathname) {
   let rel;
   try { rel = decodeURIComponent(pathname); } catch { rel = pathname; }
   if (rel === '/' || rel === '') rel = '/index.html';
   const target = path.normalize(path.join(PUBLIC_DIR, rel));
-  if (!target.startsWith(PUBLIC_DIR)) return sendJson(res, 403, { error: 'forbidden' });
+  // 注意必须是「目录本身或目录 + 分隔符」，不能用裸前缀：
+  // `<root>/public-probe/x.txt` 也以 `<root>/public` 开头，裸前缀会放行兄弟目录
+  const base = PUBLIC_DIR.endsWith(path.sep) ? PUBLIC_DIR : PUBLIC_DIR + path.sep;
+  const hasDotDot = rel.split(/[\\/]+/).includes('..');
+  if (hasDotDot || (target !== PUBLIC_DIR && !target.startsWith(base))) {
+    return sendJson(res, 403, { error: 'forbidden' });
+  }
   fs.stat(target, (err, st) => {
     if (err || !st.isFile()) {
       // 带扩展名的请求（favicon.ico / *.png / *.js …）一律 404：
@@ -458,7 +537,15 @@ const MOCK_MODELS = {
 };
 
 /* -------------------------------- 路由 -------------------------------- */
-const server = http.createServer(async (req, res) => {
+let tlsOpts = null;
+if (USE_HTTPS) {
+  try { tlsOpts = ensureTls(); }
+  catch (e) {
+    log('[错误] 启用 HTTPS 失败：' + e.message);
+    log('       退回 HTTP（口令与内容会在局域网里明文传输）');
+  }
+}
+const requestHandler = async (req, res) => {
   const url = new URL(req.url || '/', 'http://localhost');
   const p = url.pathname;
   const method = req.method || 'GET';
@@ -466,6 +553,25 @@ const server = http.createServer(async (req, res) => {
   try {
     // 局域网访问需口令（本机 127.0.0.1 免校验）
     if (lan && await lan.guard(req, res, url)) return;
+
+    // 跨站防护：浏览器里任何一个网页都能向 127.0.0.1 发「简单请求」，
+    // 不带 Origin 也读不到响应，但副作用照样发生（调工具 / 改设置 / 删会话）。
+    // 两道闸：① 有 Origin 必须同源；② 带 body 的写请求只收 application/json
+    //（表单只能发 text/plain / urlencoded / multipart，发不了 json，预检也会被拒）
+    if (method !== 'GET' && method !== 'HEAD' && method !== 'OPTIONS') {
+      const origin = req.headers.origin;
+      if (origin) {
+        let oh = '';
+        try { oh = new URL(origin).host; } catch {}
+        if (oh !== req.headers.host) return sendJson(res, 403, { error: '拒绝跨站请求（Origin 不匹配）' });
+      }
+      const rawOk = p === '/api/cpl/install' || p === '/api/import' || p.startsWith('/api/upload');
+      const hasBody = Number(req.headers['content-length'] || 0) > 0 || Boolean(req.headers['transfer-encoding']);
+      const ct = String(req.headers['content-type'] || '');
+      if (hasBody && !rawOk && !/^application\/json\b/i.test(ct)) {
+        return sendJson(res, 415, { error: '只接受 application/json（拒绝跨站表单提交）' });
+      }
+    }
 
     if (p === '/api/health') {
       return sendJson(res, 200, {
@@ -652,6 +758,50 @@ const server = http.createServer(async (req, res) => {
     log('API 错误', p, e.message);
     return sendJson(res, 500, { error: e.message });
   }
+};
+
+const server = tlsOpts ? https.createServer(tlsOpts, requestHandler) : http.createServer(requestHandler);
+const SCHEME = tlsOpts ? 'https' : 'http';
+const LOCAL_URL = `${SCHEME}://127.0.0.1:${PORT}/`;
+
+/* 端口被占用时先问一句「是不是已经有一个自己在跑」——是就直接把浏览器指过去，
+ * 而不是甩一串 EADDRINUSE 堆栈。二次双击启动脚本是很常见的操作。 */
+function probeSelf() {
+  return new Promise((resolve) => {
+    const mod = tlsOpts ? https : http;
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = mod.get({
+        host: '127.0.0.1', port: PORT, path: '/api/health',
+        timeout: 1500, rejectUnauthorized: false,
+      }, (res) => {
+        let b = '';
+        res.setEncoding('utf8');
+        res.on('data', (c) => { b += c; if (b.length > 8192) req.destroy(); });
+        res.on('end', () => {
+          try { finish(JSON.parse(b).app === 'deepseek-chatbox'); } catch { finish(false); }
+        });
+      });
+      req.on('timeout', () => { req.destroy(); finish(false); });
+      req.on('error', () => finish(false));
+    } catch { finish(false); }
+  });
+}
+
+server.on('error', async (e) => {
+  if (e.code === 'EADDRINUSE') {
+    if (await probeSelf()) {
+      log(`端口 ${PORT} 上已经有一个 DeepSeek Chatbox 在运行，直接打开它。`);
+      log(`地址：${LOCAL_URL}`);
+      if (OPEN_ON_START) openBrowser(LOCAL_URL);
+      process.exit(0);
+    }
+    log(`[致命] 端口 ${PORT} 被其他程序占用。换一个端口启动，例如：node server.mjs --port ${PORT + 1}`);
+    process.exit(1);
+  }
+  log('[致命] 服务启动失败：' + (e.message || String(e)));
+  process.exit(1);
 });
 
 /* CPL：把已安装插件加载进注册表。失败不影响主服务启动。 */
@@ -660,29 +810,38 @@ cpl.boot()
   .catch((e) => log('[cpl] 插件加载失败：' + e.message));
 
 server.listen(PORT, HOST, () => {
-  log(`DeepSeek Chatbox 运行中: http://127.0.0.1:${PORT}`);
+  log(`DeepSeek Chatbox 运行中: ${SCHEME}://127.0.0.1:${PORT}`);
   log(`数据目录: ${store.dir}`);
   log(`API Key: ${store.getApiKey() ? '已配置（服务端）' : '未配置'}${ENV_KEY ? ' [环境变量]' : ''}`);
+  if (tlsOpts) log('传输：HTTPS（自签证书，首次访问浏览器会提示不安全，点「继续」即可）');
+  else if (USE_HTTPS) log('传输：HTTP（HTTPS 启动失败，已退回）');
+  else log('传输：HTTP（局域网内明文；需要加密就加 --https 启动）');
   if (LAN_OPEN) {
     const ips = lanAddresses();
     console.log('');
     log('手机访问（手机需与这台电脑连同一个 WiFi / 路由器）：');
     if (lan) {
       if (ips.length) {
-        log(`   http://${ips[0]}:${PORT}/?k=${lan.token}    <- 一般就是这条`);
-        if (ips[1]) log(`   http://${ips[1]}:${PORT}/?k=${lan.token}`);
+        log(`   ${SCHEME}://${ips[0]}:${PORT}/?k=${lan.token}    <- 一般就是这条`);
+        if (ips[1]) log(`   ${SCHEME}://${ips[1]}:${PORT}/?k=${lan.token}`);
         log(`   访问口令：${lan.token}`);
         log('   连不上就换上面另一条，或 ipconfig 看本机 IPv4 地址再拼 :' + PORT);
       } else {
-        log(`   没找到局域网 IP。请用 ipconfig 查看本机 IPv4，再访问 http://<IP>:${PORT}/?k=${lan.token}`);
+        log(`   没找到局域网 IP。请用 ipconfig 查看本机 IPv4，再访问 ${SCHEME}://<IP>:${PORT}/?k=${lan.token}`);
         log(`   访问口令：${lan.token}`);
       }
       log('   只想自己这台电脑用：加 --local-only 启动。');
     } else {
-      for (const ip of ips) log(`   http://${ip}:${PORT}/`);
+      for (const ip of ips) log(`   ${SCHEME}://${ip}:${PORT}/`);
       log('   ⚠ 已用 --no-auth 关闭口令，同网段任何人都能使用你的 API Key。');
     }
     console.log('');
+  }
+  // 放在最后：上面这些行先刷出来，用户看到日志的同一瞬间浏览器才开始加载，
+  // 端口此时已经在应答，不会出现「网页比服务端快」的空白页。
+  if (OPEN_ON_START) {
+    log('正在用默认浏览器打开…（不想自动打开就加 --no-open）');
+    if (!openBrowser(LOCAL_URL)) log('请手动访问：' + LOCAL_URL);
   }
 });
 

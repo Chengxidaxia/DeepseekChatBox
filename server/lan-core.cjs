@@ -25,6 +25,27 @@ function createLan({ dataDir, log }) {
   }
   const TOKEN = state.token;
 
+  /* 口令爆破防护：同一 IP 5 分钟内错 5 次就锁到窗口结束。
+   * 局域网里 token 是 12 位十六进制（48 bit），正常爆破不现实，
+   * 但 RadminLAN 这类 VPN 常年开着，别给人无限次尝试的机会。 */
+  const FAIL_LIMIT = 5;
+  const FAIL_WINDOW = 5 * 60 * 1000;
+  const fails = new Map();   // ip -> { n, first }
+  const ipOf = (req) => String(req.socket.remoteAddress || '');
+  const lockLeft = (ip) => {
+    const e = fails.get(ip);
+    if (!e) return 0;
+    const left = FAIL_WINDOW - (Date.now() - e.first);
+    if (left <= 0) { fails.delete(ip); return 0; }
+    return e.n >= FAIL_LIMIT ? Math.ceil(left / 1000) : 0;
+  };
+  const noteFail = (ip) => {
+    const now = Date.now();
+    const e = fails.get(ip);
+    if (!e || now - e.first > FAIL_WINDOW) fails.set(ip, { n: 1, first: now });
+    else e.n++;
+  };
+
   const isLocal = (req) => {
     const ra = String(req.socket.remoteAddress || '');
     return ra === '127.0.0.1' || ra === '::1' || ra === '::ffff:127.0.0.1';
@@ -88,7 +109,7 @@ function createLan({ dataDir, log }) {
     <input id="k" inputmode="latin" autocapitalize="off" autocorrect="off" spellcheck="false"
            placeholder="粘贴或输入 12 位口令" autofocus>
     <button id="go">进入</button>
-    <div class="err" id="err">${bad ? '口令不正确，请重新核对' : ''}</div>
+    <div class="err" id="err">${typeof bad === 'string' ? bad : (bad ? '口令不正确，请重新核对' : '')}</div>
   </div>
 <script>
   const k = document.getElementById('k');
@@ -139,6 +160,15 @@ function createLan({ dataDir, log }) {
         return res.end(), true;
       }
 
+      // 锁定检查放在 cookie / ?k= 之后：口令本来就是对的就别拦
+      const ip = ipOf(req);
+      const wait = lockLeft(ip);
+      if (wait > 0) {
+        res.writeHead(429, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(loginPage(`尝试次数过多，请 ${wait} 秒后再试`));
+        return true;
+      }
+
       // 口令提交
       if (url.pathname === '/__lan' && req.method === 'POST') {
         let body = {};
@@ -151,6 +181,7 @@ function createLan({ dataDir, log }) {
           });
           return res.end(JSON.stringify({ ok: true })), true;
         }
+        noteFail(ip);
         res.writeHead(403, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         return res.end(JSON.stringify({ ok: false, error: '口令不正确' })), true;
       }

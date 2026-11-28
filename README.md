@@ -290,16 +290,35 @@ myplugin.zip
 
 | 写法 | 含义 |
 |---|---|
-| `function` | cdcp 命名空间的 `function`（chatbox 自身对象，命名空间可省） |
-| `myplug:onSend` | 插件 `myplug` 的方法 |
+| `function` | 省略命名空间 → 插件内指向**自己**，其余场景指向 `cdcp` |
+| `myplug:onSend` | 插件 `myplug` 的方法，不限版本 |
 | `myplug@13520:onSend` | 同上，且唯一版本号必须等于 13520 |
 | `myplug@>=13520:onSend` | 大于等于；另支持 `>` `=` `<` `<=` |
 | `myplug@[13520,14520]:onSend` | 闭区间；也支持 `(a,b)` `[a,b)` `(a,b]` |
+| `@>=13520:onSend` | 省略命名空间 + 带版本：插件内指向自己，其余指向 `cdcp` |
 
 - `@` 与版本条件必须**同时出现或同时省略**
 - 版本号是 **unsigned long long**（与语义版本无关，纯数字，用 BigInt 比较）
-- 保留命名空间：`cdcp`（chatbox 自身）、`cpl`（加载器）
+- 版本条件在**调用侧真的会校验**：工具 / API / hook 解析时都会比对目标的 `uniqueVersion`，
+  比如 `demo@>999:foo` 当前是 `13520` 就会失败并明确告诉你「版本条件不满足：…（当前 uniqueVersion 13520）」，
+  不会静默命中一个不匹配的版本
+- 版本条件只影响**解析是否命中**，不影响注册：注册表里每个命名空间只保留一个版本（安装时同名插件无法共存）
+- 保留命名空间：`cdcp`（chatbox 自身）、`cdcptools`（内置工具集）、`cpl`（加载器）
 - **同名对象插件优先**；插件之间同名的，后加载者胜并记入冲突列表
+
+#### 工具的命名与调用
+
+**分隔符口径（v1.16.2）**：命名空间与方法之间**一律用冒号** `ns:方法名` —— 内部 ID、插件页、日志、文档、插件内调用写法全按这个来。
+只有一个地方不得不转义：发给模型的 `function.name`，因为 OpenAI / DeepSeek 只接受 `[A-Za-z0-9_-]`，冒号会让整条请求 400，
+所以模型侧自动换成 `ns__方法名`（唯一使用双下划线的地方）。插件里写两种都认，但推荐冒号。
+
+| 场景 | 规则 |
+|---|---|
+| 模型看到的工具名 | 内置工具保持裸名（`current_time`）；第三方插件工具 `命名空间__工具名`（API 硬限制，唯一转义处） |
+| 插件内调用 `tools.call('foo')` | 先找**自己**注册的 `foo`，没有再回退到 **cdcp / cdcptools** 的 `foo`；都找不到就报未知工具 |
+| 插件内调用自己的工具 | `tools.call('foo')` 或 `tools.call('myplug:foo')`，两者等价 |
+| 插件内调用别的插件的工具 | 必须写全 `别的ns:foo`（或兼容写法 `别的ns__foo`）；裸名永远不会落到别的插件上 |
+| 两个插件注册同名工具 | 不会互相覆盖：各自带自己的命名空间，都能被调到 |
 
 #### 接口规模
 
@@ -336,13 +355,17 @@ API 覆盖：消息 / 会话 / 工具 / hook / 事件总线 / KV / 配置 / 网�
 
 插件管理器是**独立页面**，不挤在设置弹窗里：
 
-- 本地版：`http://127.0.0.1:17321/cpl`（`/cpl/` 同效）。设置里点「插件」会直接跳到这一页，右上角「返回对话」回聊天
+- 本地版：`http://127.0.0.1:17321/cpl`（`/cpl/` 同效）。设置里点「插件」会直接跳到这一页，**左上角返回键**回聊天
 - 云端专版：入口同为「设置 → 插件」，走 `#/cpl`（静态托管下不依赖服务端对自定义路径的兜底，也不会被资源网关拦）
 - 页面能力：安装（上传 zip）、启用 / 禁用、卸载、全部重载
 - 每个插件显示接口计数（工具 / Hook / API / UI）、权限、前置依赖、错误信息
 - 详情里可展开运行日志与插件自己的配置项（`data.json` 的 `config` schema）
-- 列表里 `cdcp`（ChatBox 自身）与 `cpl`（加载器本体）**和普通插件一样显示**：自带图标（`public/assets/plugin-*.png`）、描述、接口计数、详情与日志；
+- 列表里 `cdcp`（ChatBox 自身）与 `cpl`（加载器本体）**和普通插件一样显示**：描述、接口计数、详情与日志；
   区别只有一条——核心插件不给禁用 / 卸载（开关与删除按钮置灰，`title` 说明原因）
+- 元数据全部由服务端下发，前端不写死：**权限**取自插件自己的 `spec.permissions` / `data.json`（内置插件也逐个声明，`cdcp` 是空数组＝不调用扩展接口），**图标**走 `iconUrl`（内置 → `/assets/plugin-*.png`，第三方 → `/api/cpl/icon/<ns>`），新增内置插件不用改前端
+- 详情里的**「实现」**一行说明插件是用什么形式写的：内置插件是「内置模块（服务端 js，不经过插件包）」，第三方是「N 个 JSON 方法」「N 个脚本」。
+  内置插件的 **方法/脚本计数本来就是 0** —— 它们不走 `data.json` 方法也不走 js/py 脚本，而是由 `registerBuiltinSync` 直接注册；
+  真实的产出体现在「接口」一行的工具数上（`cdcptools` = 44 个工具）
 
 #### 安全边界（不夸大）
 
@@ -368,6 +391,22 @@ API 覆盖：消息 / 会话 / 工具 / hook / 事件总线 / KV / 配置 / 网�
 - **分组**：侧栏底部「新建分组」，对话行上的文件夹图标可移动分组；分组头可折叠、可改名/删除（删组不删对话）
 - **会话设置**（顶栏齿轮）：分组归属、模型、系统提示词、思考/强度、搜索/阅读链接/工具、安全、JSON、温度、max tokens
 - 组内有独立设置时，输入框的开关只影响当前会话（自动拆成会话级覆盖，不动同组其它对话）
+
+#### 设置页的每个分标签都是独立地址
+
+| 页面 | 本地 | 云端专版 |
+|---|---|---|
+| 通用（API Key / 语言 / 主题） | `/settings/general` | `#/settings/general` |
+| 模型与参数 | `/settings/model` | `#/settings/model` |
+| 生成（联网 / 本地工具 / 子智能体） | `/settings/gen` | `#/settings/gen` |
+| 数据（存储位置 / 导入导出） | `/settings/data` | `#/settings/data` |
+| 关于（版本 / 快捷键） | `/settings/about` | `#/settings/about` |
+| 插件管理 | `/cpl` | `#/cpl` |
+
+- 直接访问任一带 tab 的地址会打开对应分页（左侧导航同步选中，标签页标题跟着变），不再全落到同一个 `/settings`
+- 页内点导航切换分页时用 `history.replaceState` 同步地址栏，不整页刷新（云端 hash 变化也不会触发重新挂载）
+- `/settings` 等价于 `/settings/general`；`/settings/plugins` 会跳到 `/cpl`（插件管理器本来就是一整页）
+- 设置入口（侧栏齿轮、错误提示里的「打开设置」）统一跳 `/settings/general`；录入过程中再点齿轮仍是弹窗，不会丢失未保存的输入
 
 ### 手机端适配
 
@@ -461,6 +500,7 @@ deepseek-chatbox/
 │  └─ builtin/tools.plugin.cjs  内置工具插件（44 个工具都经它注册）
 ├─ data/                   运行时生成：设置 / 对话 / 附件 / 备份
 ├─ package.json
+├─ scripts/check.mjs       一键自检（语法 / 元数据 / 起服务实测 / 仓库状态），见 §3.1
 ├─ 启动.bat                纯 ASCII + CRLF（chcp 65001 让程序中文日志正常显示），双击即用（源码版）
 ├─ DeepSeekChatBox-portable.zip   便携版压缩包（38.1 MB）
 ├─ portable/
@@ -493,6 +533,28 @@ deepseek-chatbox/
 │  ├─ assets/              logo-wordmark.svg / logo-whale.svg
 │  └─ vendor/              marked · highlight.js · katex(+fonts) · mermaid
 ```
+
+---
+
+### 3.1 一键自检（改完代码跑这一条就够）
+
+```bash
+npm run check          # 全量：语法 + 元数据 + 真起一次服务 + 接口/防护实测 + 仓库状态
+npm run check:fast     # 快速：不起服务，只查语法 / 版本 / 写死项 / git
+node scripts/check.mjs --keep --port 17600   # 保留临时数据目录 / 指定端口
+```
+
+| 步骤 | 检查内容 |
+|---|---|
+| ① 语法 | 全部 `js` / `cjs` / `mjs`（含 `scripts/`、`public/js`）逐个 `node --check` |
+| ② 元数据 | 版本号真源（`package.json`）与 README / 两份使用说明 / 专版 `package.json` 是否一致；前端与便携版入口有没有写死版本；前端有没有写死内置插件映射；文档里写的工具数是否等于实际工具数 |
+| ③ 起服务 | 临时端口 + 临时数据目录冷启动，量**从进程启动到 `/api/health` 可应答**的耗时（启动脚本的时序问题看这个数） |
+| ④ 接口与防护 | `/api/version`、`/api/cpl/plugins`（内置插件齐全、权限是数组、`iconUrl` 可访问、工具全登记在 `cdcptools`）、`/`、`/cpl`、`/settings` 能否打开、跨站 Origin → 403、非 JSON 写请求 → 415、`%2e%2e%2f` 穿越 → 403 |
+| ⑤ 仓库状态 | 未提交改动清单、最近一次提交、HEAD 有没有 tag、发布 zip 是否比源码旧 |
+
+- 退出码：`0` 全过（允许 WARN），`1` 有 FAIL。提交 / 发版前必须 0 FAIL。
+- WARN 是「需要人看一眼」的提示（未提交、没打 tag、zip 落后），不阻塞。
+- 服务端自检用的临时 `--data-dir`，不会动到 `data/` 里的真实会话与 Key。
 
 ---
 
@@ -622,9 +684,10 @@ deepseek-chatbox/
 **网页版（本地 Web + WorkBuddy 专版）只有 `vMAJOR.MINOR.PATCH`，不带构建号。**
 修 bug 发版时 `PATCH + 1`，例：`v1.12.5` → `v1.12.6`（历史 tag 保留原名，不追溯）。
 
-**版本号真源在后端**：各自 `package.json` 的 `version` 字段（便携版用 `portable/sea-main.cjs` 的内联 `VERSION`）。
-前端不再硬编码，运行时通过 `GET /api/version` 读取（见 `public/js/version.js` 的 `loadAppVersion()`）；
-`/api/health` 也返回 `version`。
+**版本号真源在后端**：各自 `package.json` 的 `version` 字段。
+前端不硬编码，运行时通过 `GET /api/version` 读取（见 `public/js/version.js` 的 `loadAppVersion()`）；`/api/health` 也返回 `version`。
+便携版（SEA 单文件）运行环境里没有磁盘上的 `package.json`，所以 `portable/build.mjs` 在打包时把 `package.json` 的版本
+注入到源码占位符 `__DS_CB_VERSION__` 里 —— 源码本身不写死版本，真源仍然只有 `package.json` 一处。
 
 `vX.Y.Z.buildN` 那套累计构建计数**只属于 iOS 原生仓库**（`deepseek-chatbox-cpp`），
 口径见该仓库 `docs/版本号与构建计数.md`。根目录 `build-count.json` 已删除（历史留档停在 88，`release.py` 不读写）；

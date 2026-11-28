@@ -18,7 +18,12 @@
  *   pluns@>=1320:func         → pluns, >=1320, func
  */
 
-const RESERVED_NS = new Set(['cdcp', 'cpl']);
+const RESERVED_NS = new Set(['cdcp', 'cdcptools', 'cpl']);
+/* 内置工具所在的命名空间：只有它的工具在模型侧用裸名（不带 `ns__` 前缀）。
+ * cdcp 是宿主（ChatBox 自身），不再直接注册工具，但保留在裸名里兼容旧引用。 */
+const CORE_TOOL_NS = 'cdcptools';
+const BARE_NS = new Set([CORE_TOOL_NS, 'cdcp']);
+const isBareNs = (ns) => BARE_NS.has(ns);
 const NS_RE = /^[A-Za-z_][A-Za-z0-9_.-]*$/;
 const ID_RE = /^[A-Za-z_][A-Za-z0-9_.:-]*$/;
 const ULL_MAX = (1n << 64n) - 1n;
@@ -107,7 +112,8 @@ function parseId(raw, opt = {}) {
   if (at !== -1) {
     ns = head.slice(0, at).trim();
     const verSeg = head.slice(at + 1).trim();
-    if (!ns) throw new IdError(`@ 前缺少命名空间：${s}`, raw);
+    // `@>=13520:foo` 这种省略命名空间的写法：插件内指向自己，外部指向 cdcp
+    if (!ns) ns = opt.selfNs || opt.defaultNs || 'cdcp';
     range = parseRange(verSeg, raw);
   } else if (cut !== -1 && head.trim()) {
     ns = head.trim();
@@ -125,7 +131,7 @@ function parseId(raw, opt = {}) {
     ns,
     id,
     range,
-    full: ns === 'cdcp' ? id : `${ns}:${id}`,
+    full: isBareNs(ns) ? id : `${ns}:${id}`,
     key: `${ns}@${range ? range.text : '*'}:${id}`,
   };
 }
@@ -172,13 +178,13 @@ function sameTarget(a, b) {
 
 /** 生成完整 ID 文本 */
 function formatId(ns, uniqueVersion, id) {
-  const head = ns === 'cdcp' ? '' : `${ns}@`;
+  const head = isBareNs(ns) ? '' : `${ns}@`;
   return uniqueVersion === undefined || uniqueVersion === null
     ? `${head}${id}`
     : `${head}${uniqueVersion}:${id}`;
 }
 
 module.exports = {
-  IdError, RESERVED_NS, ULL_MAX,
+  IdError, RESERVED_NS, ULL_MAX, CORE_TOOL_NS, BARE_NS, isBareNs,
   parseId, tryParseId, parseRef, tryParseRef, parseRange, matchVersion, sameTarget, formatId, toUll,
 };
